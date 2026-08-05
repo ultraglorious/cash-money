@@ -1,8 +1,6 @@
-<img src="apps/desktop/public/logo.svg" width="72" alt="cash-money logo" align="left" />
+<img src="apps/desktop/public/wordmark.svg" width="300" alt="cash money" />
 
 # cash-money
-
-<br clear="left" />
 
 A local, cross-platform **envelope-budgeting** app. Your money lives on your own
 machine (no accounts, no server), you assign every unit of currency to a

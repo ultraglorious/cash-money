@@ -1,4 +1,4 @@
-import { ActionIcon, Badge, Box, Group, NavLink, ScrollArea, Stack, Text, ThemeIcon, Tooltip } from "@mantine/core";
+import { ActionIcon, Badge, Group, NavLink, ScrollArea, Stack, Text, ThemeIcon, Tooltip } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
   DndContext,
@@ -24,7 +24,7 @@ import { useApp } from "../state";
 import { money } from "../format";
 import { amountColor, householdColor } from "../theme";
 import { AddAccountModal } from "./AddAccountModal";
-import { Logo } from "./Logo";
+import { Wordmark } from "./Wordmark";
 
 function accountIcon(a: Account) {
   if (a.type === "creditCard") return IconCreditCard;
@@ -59,13 +59,12 @@ export function Sidebar() {
 
   return (
     <Stack h="100%" gap={0}>
-      <Group gap="xs" px="md" py="md" wrap="nowrap">
-        <Logo size={34} />
-        <Box style={{ minWidth: 0 }}>
-          <Text fw={700} truncate>{budget.budget.name}</Text>
-          <Text size="xs" c="dimmed">{budget.budget.currency.code}</Text>
-        </Box>
-      </Group>
+      <Stack gap={4} px="md" py="md">
+        <Wordmark size={30} />
+        <Text size="xs" c="dimmed" truncate>
+          {budget.budget.name} · {budget.budget.currency.code}
+        </Text>
+      </Stack>
 
       <ScrollArea style={{ flex: 1 }} px="xs">
         <NavLink active={view.kind === "plan"} label="Plan" leftSection={<IconTargetArrow size={18} />} onClick={() => setView({ kind: "plan" })} variant="filled" />
