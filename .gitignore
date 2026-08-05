@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+
+# Local scratch / generated reports
+/tmp-reports/
+
+# Tauri (Phase 2 shell)
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/gen/
+
+# Never commit real financial exports
+/.import/
