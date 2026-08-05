@@ -207,24 +207,30 @@ export class BudgetRepository {
     }
   }
 
-  /** Insert or update transactions by id, rewriting only the affected shards. */
-  async upsertTransactions(
+  /**
+   * Rewrite ONLY the given months' shards from the full in-memory transaction
+   * list (deleting a shard whose month has emptied). The caller names every
+   * month an edit touched — including a moved transaction's OLD month — so a
+   * cross-month date change can never leave a stale copy behind.
+   */
+  async writeTransactionMonths(
     budgetId: string,
     transactions: readonly Transaction[],
+    months: ReadonlySet<MonthKey>,
   ): Promise<void> {
-    const touchedMonths = new Set<MonthKey>();
-    for (const t of transactions) touchedMonths.add(monthKeyOf(t.date));
-
-    for (const month of touchedMonths) {
-      const existing = await this.readShard(budgetId, month);
-      const byIdMap = new Map<string, Transaction>(existing.map((t) => [t.id, t]));
-      for (const t of transactions) {
-        if (monthKeyOf(t.date) === month) byIdMap.set(t.id, t);
+    if (months.size === 0) return;
+    const byMonth = groupByMonth(transactions);
+    await this.fs.ensureDir(layout.transactionsDir(budgetId));
+    for (const month of months) {
+      const txns = byMonth.get(month);
+      if (txns && txns.length > 0) {
+        await this.fs.writeTextFileAtomic(
+          layout.transactionShard(budgetId, month),
+          toNdjson(byId(txns)),
+        );
+      } else {
+        await this.fs.remove(layout.transactionShard(budgetId, month));
       }
-      await this.fs.writeTextFileAtomic(
-        layout.transactionShard(budgetId, month),
-        toNdjson(byId([...byIdMap.values()])),
-      );
     }
   }
 

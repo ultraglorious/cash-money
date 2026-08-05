@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActionIcon,
   Badge,
@@ -535,12 +535,23 @@ function AvailableCell({ categoryId, available, candidates }: { categoryId: Ulid
 
 function AssignedCell({ categoryId, value }: { categoryId: Ulid; value: number }) {
   const { month, setAssigned, currency } = useApp();
+  // Edits live in a local draft and commit on blur/Enter — dispatching per
+  // keystroke would recompute the whole projection (and persist intermediate
+  // values like the "1" of "1250") on every keypress.
+  const [draft, setDraft] = useState<number | string>(value / 100);
+  useEffect(() => setDraft(value / 100), [value]);
+  const commit = () => {
+    const cents = Math.round(Number(draft || 0) * 100) as Cents;
+    if (cents !== value) setAssigned(month, categoryId, cents);
+  };
   return (
     <NumberInput
       size="xs" variant="filled" prefix={currency.symbol} decimalScale={2} fixedDecimalScale hideControls thousandSeparator=","
       styles={{ input: { textAlign: "right" } }}
-      value={value / 100}
-      onChange={(v) => setAssigned(month, categoryId, Math.round(Number(v || 0) * 100) as Cents)}
+      value={draft}
+      onChange={setDraft}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
     />
   );
 }

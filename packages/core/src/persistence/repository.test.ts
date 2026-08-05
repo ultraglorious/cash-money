@@ -118,22 +118,38 @@ describe("BudgetRepository round-trip", () => {
     expect(fs.has(layout.transactionShard(b.budget.id, "2026-02"))).toBe(false);
   });
 
-  it("upserts a single transaction, touching only its shard", async () => {
+  it("writeTransactionMonths rewrites only the named shards", async () => {
     const fs = new InMemoryFileSystem();
     const repo = new BudgetRepository(fs);
     const b = sampleBudget();
     await save(repo, b);
 
     const janBefore = await fs.readTextFile(layout.transactionShard(b.budget.id, "2026-01"));
-    const updated = f.txn({ id: f.tid("TXN2"), date: "2026-02-03", amount: -111 as Cents });
-    await repo.upsertTransactions(b.budget.id, [updated]);
+    const txs = b.transactions.map((t) => (t.id === f.tid("TXN2") ? { ...t, amount: -111 as Cents } : t));
+    await repo.writeTransactionMonths(b.budget.id, txs, new Set(["2026-02"]));
 
     const janAfter = await fs.readTextFile(layout.transactionShard(b.budget.id, "2026-01"));
     expect(janAfter).toBe(janBefore); // untouched
 
     const loaded = await repo.loadBudget(b.budget.id);
-    const t2 = loaded.transactions.find((t) => t.id === f.tid("TXN2"))!;
-    expect(t2.amount).toBe(-111);
+    expect(loaded.transactions.find((t) => t.id === f.tid("TXN2"))!.amount).toBe(-111);
+  });
+
+  it("writeTransactionMonths handles a cross-month date move without stale copies", async () => {
+    const fs = new InMemoryFileSystem();
+    const repo = new BudgetRepository(fs);
+    const b = sampleBudget();
+    await save(repo, b);
+
+    // Move TXN1 (the only January transaction) into March; caller names BOTH months.
+    const txs = b.transactions.map((t) => (t.id === f.tid("TXN1") ? { ...t, date: "2026-03-15" } : t));
+    await repo.writeTransactionMonths(b.budget.id, txs, new Set(["2026-01", "2026-03"]));
+
+    // The emptied January shard is gone; the transaction exists exactly once.
+    expect(await fs.readTextFile(layout.transactionShard(b.budget.id, "2026-01"))).toBeNull();
+    const loaded = await repo.loadBudget(b.budget.id);
+    expect(loaded.transactions.filter((t) => t.id === f.tid("TXN1"))).toHaveLength(1);
+    expect(loaded.transactions.find((t) => t.id === f.tid("TXN1"))!.date).toBe("2026-03-15");
   });
 
   it("registers budgets in the app index and tracks the active one", async () => {
