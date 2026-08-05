@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  Accordion,
   ActionIcon,
   Alert,
   Badge,
@@ -8,16 +7,14 @@ import {
   Divider,
   Group,
   Modal,
-  NumberInput,
   Paper,
-  Select,
   Stack,
   Table,
   Text,
   TextInput,
   Title,
 } from "@mantine/core";
-import { IconAlertTriangle, IconFileImport, IconPlus, IconTrash } from "@tabler/icons-react";
+import { IconAlertTriangle, IconFileImport, IconTrash } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { stageImport, type ImportConfig, type StagingResult } from "@cash-money/core";
 import { useApp } from "../../state";
@@ -32,14 +29,6 @@ interface SourceDraft {
   plan: string;
   exportDate: string;
 }
-interface StitchDraft {
-  aSourceKey: string;
-  aLinkPayee: string;
-  bSourceKey: string;
-  bLinkPayee: string;
-  windowDays: number;
-}
-
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "src";
 const today = () => new Date().toISOString().slice(0, 10);
 function parseAsOf(name: string): string {
@@ -50,13 +39,11 @@ function parseAsOf(name: string): string {
 export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const app = useApp();
   const [sources, setSources] = useState<SourceDraft[]>([]);
-  const [rules, setRules] = useState<StitchDraft[]>([]);
   const [result, setResult] = useState<StagingResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const reset = () => {
     setSources([]);
-    setRules([]);
     setResult(null);
     setError(null);
   };
@@ -92,11 +79,6 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
     setSources((ss) => ss.map((s) => (s.sourceKey === key ? { ...s, ...patch } : s)));
   const removeSource = (key: string) => setSources((ss) => ss.filter((s) => s.sourceKey !== key));
 
-  const addRule = () =>
-    setRules((rs) => [...rs, { aSourceKey: sources[0]?.sourceKey ?? "", aLinkPayee: "", bSourceKey: sources[1]?.sourceKey ?? sources[0]?.sourceKey ?? "", bLinkPayee: "", windowDays: 3 }]);
-  const updateRule = (i: number, patch: Partial<StitchDraft>) => setRules((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const removeRule = (i: number) => setRules((rs) => rs.filter((_, j) => j !== i));
-
   const runDryRun = () => {
     setError(null);
     try {
@@ -105,9 +87,10 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
         budgetName: app.budget.budget.name,
         exportDate: sources[0]?.exportDate ?? today(),
         sources: sources.map((s) => ({ sourceKey: s.sourceKey, label: s.household, household: s.household })),
-        stitchRules: rules
-          .filter((r) => r.aSourceKey && r.bSourceKey && r.aLinkPayee.trim() && r.bLinkPayee.trim())
-          .map((r) => ({ aSourceKey: r.aSourceKey, aLinkPayee: r.aLinkPayee.trim(), bSourceKey: r.bSourceKey, bLinkPayee: r.bLinkPayee.trim(), windowDays: r.windowDays })),
+        // Cross-budget movements are kept as-is (income on one side, a categorised
+        // expense on the other). "Stitching" them into a single transfer double-counts
+        // the funding and wrecks Ready-to-Assign, so it is intentionally not offered.
+        stitchRules: [],
         trackingAccountHints: ["investment", "etf", "etc", "shares", "deposit"],
       };
       const inputs = sources.map((s) => ({ sourceKey: s.sourceKey, registerCsv: s.register, planCsv: s.plan }));
@@ -124,8 +107,6 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
     app.setView({ kind: "plan" });
     close();
   };
-
-  const sourceOptions = sources.map((s) => ({ value: s.sourceKey, label: s.household }));
 
   return (
     <Modal opened={opened} onClose={close} title="Import budget export" size="xl" centered>
@@ -172,32 +153,11 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
               </Table.Tbody>
             </Table>
 
-            <Accordion variant="separated">
-              <Accordion.Item value="stitch">
-                <Accordion.Control>
-                  <Text size="sm" fw={600}>Advanced: link transfers between budgets ({rules.length})</Text>
-                </Accordion.Control>
-                <Accordion.Panel>
-                  <Stack gap="xs">
-                    <Text size="xs" c="dimmed">
-                      When money moves between two budgets it's recorded as a plain payee on each side. Add a rule so
-                      those get stitched into a single transfer (matched by amount + nearby date).
-                    </Text>
-                    {rules.map((r, i) => (
-                      <Group key={i} gap="xs" wrap="nowrap" align="flex-end">
-                        <Select size="xs" label="From" data={sourceOptions} value={r.aSourceKey} onChange={(v) => v && updateRule(i, { aSourceKey: v })} />
-                        <TextInput size="xs" label="Payee in From" value={r.aLinkPayee} onChange={(e) => updateRule(i, { aLinkPayee: e.currentTarget.value })} />
-                        <Select size="xs" label="To" data={sourceOptions} value={r.bSourceKey} onChange={(v) => v && updateRule(i, { bSourceKey: v })} />
-                        <TextInput size="xs" label="Payee in To" value={r.bLinkPayee} onChange={(e) => updateRule(i, { bLinkPayee: e.currentTarget.value })} />
-                        <NumberInput size="xs" label="± days" w={70} min={0} value={r.windowDays} onChange={(v) => updateRule(i, { windowDays: Number(v || 0) })} />
-                        <ActionIcon variant="subtle" color="red" onClick={() => removeRule(i)} aria-label="Remove rule"><IconTrash size={15} /></ActionIcon>
-                      </Group>
-                    ))}
-                    <Button size="compact-xs" variant="light" leftSection={<IconPlus size={14} />} onClick={addRule} disabled={sources.length === 0}>Add rule</Button>
-                  </Stack>
-                </Accordion.Panel>
-              </Accordion.Item>
-            </Accordion>
+            <Text size="xs" c="dimmed">
+              Money that moves between your budgets is kept as it was recorded — income on the receiving side, a
+              categorised expense on the sending side — which is what makes each household's Ready-to-Assign come out
+              right.
+            </Text>
 
             <Group>
               <Button variant="light" onClick={runDryRun}>Preview import (dry run)</Button>
@@ -226,7 +186,6 @@ function ReportView({ result, currency, onCommit }: { result: StagingResult; cur
         {row("Non-zero assignments", `${r.assignments}`)}
         {row("Splits reconstructed", `${r.splitsReconstructed}`)}
         {row("Within-budget transfer pairs", `${r.transfers.withinPairs} (${r.transfers.withinUnpaired} unpaired)`)}
-        {row("Cross-budget stitched", `${r.transfers.crossMatched} (${r.transfers.crossUnmatched} left as txns)`)}
         {row("Net across accounts", money(r.netAcrossAccounts, currency))}
         {(r.unresolvedAccounts > 0 || r.unresolvedCategories > 0) && (
           <Badge color="orange" variant="light">unresolved: {r.unresolvedAccounts} accounts, {r.unresolvedCategories} categories</Badge>
