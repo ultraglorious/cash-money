@@ -1,12 +1,12 @@
 import { newId, type Ulid } from "../ids.js";
 import type { Account, AccountType } from "../model/types.js";
-import type { ImportConfig } from "./config.js";
-import { fold } from "./text.js";
+import { householdBySource, type ImportConfig } from "./config.js";
+import { SEP, fold } from "./text.js";
 import type { StagedTxn } from "./staged.js";
 
 /** Accounts are keyed by (sourceKey, accountFold) so each source stays distinct. */
 function accountKey(sourceKey: string, accountFold: string): string {
-  return `${sourceKey}␟${accountFold}`;
+  return `${sourceKey}${SEP}${accountFold}`;
 }
 
 const CREDIT_CARD_RE = /credit\s*card/i;
@@ -47,7 +47,7 @@ export function buildAccounts(staged: readonly StagedTxn[], config: ImportConfig
     }
   }
 
-  const householdBySource = new Map(config.sources.map((s) => [s.sourceKey, s.household]));
+  const householdOf = householdBySource(config);
 
   const idByKey = new Map<string, Ulid>();
   const accounts: Account[] = [];
@@ -59,7 +59,7 @@ export function buildAccounts(staged: readonly StagedTxn[], config: ImportConfig
     const type = inferType(name, config);
     const id = newId();
     idByKey.set(key, id);
-    const household = householdBySource.get(sourceKey);
+    const household = householdOf.get(sourceKey);
     accounts.push({
       id,
       name,

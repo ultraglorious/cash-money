@@ -1,11 +1,10 @@
 import { newId, type Ulid } from "../ids.js";
 import type { Account, Category, CategoryGroup, CategoryGroupKind } from "../model/types.js";
 import type { AccountsResult } from "./accounts.js";
-import type { ImportConfig } from "./config.js";
+import { householdBySource, type ImportConfig } from "./config.js";
 import type { NormPlan } from "./planCsv.js";
 import type { StagedTxn } from "./staged.js";
-
-const SEP = "␟";
+import { SEP } from "./text.js";
 
 interface GroupSeed {
   household: string;
@@ -42,10 +41,9 @@ export function buildCategories(
   config: ImportConfig,
   accounts: AccountsResult,
 ): CategoriesResult {
-  const householdOf = new Map<string, string>();
+  const householdOf = householdBySource(config);
   const sourcesByHousehold = new Map<string, string[]>();
   for (const s of config.sources) {
-    householdOf.set(s.sourceKey, s.household);
     (sourcesByHousehold.get(s.household) ?? sourcesByHousehold.set(s.household, []).get(s.household)!).push(s.sourceKey);
   }
 

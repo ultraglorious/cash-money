@@ -11,13 +11,8 @@ export function newId(): Ulid {
   return ulid() as Ulid;
 }
 
-/** Assert a string is a well-formed ULID and brand it (for deserialization). */
-export function asUlid(s: string): Ulid {
-  if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(s)) {
-    throw new Error(`Not a ULID: ${JSON.stringify(s)}`);
-  }
-  return s as Ulid;
-}
+/** Canonical ULID shape — the single source of truth for validation (schema.ts). */
+export const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
 // Unit separator — a byte that cannot appear in our field values, so joined
 // parts are unambiguous and two different tuples can never collide.

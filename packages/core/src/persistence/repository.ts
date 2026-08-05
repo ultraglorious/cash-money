@@ -3,6 +3,7 @@ import { newId, type Ulid } from "../ids.js";
 import { monthKeyOf, type ISODate, type MonthKey } from "../time.js";
 import { RegisterFormatSchema, type RegisterFormat } from "../import/format.js";
 import {
+  AppIndexSchema,
   parseAccount,
   parseBudget,
   parseCategory,
@@ -86,7 +87,9 @@ export class BudgetRepository {
   async loadApp(): Promise<AppIndex> {
     const text = await this.fs.readTextFile(layout.APP_FILE);
     if (text === null) return { ...EMPTY_APP };
-    return JSON.parse(text) as AppIndex;
+    // Validate like every other file read: a corrupted index should be a clear
+    // error at the boundary, not undefined-shaped state downstream.
+    return AppIndexSchema.parse(JSON.parse(text)) as AppIndex;
   }
 
   async saveApp(app: AppIndex): Promise<void> {

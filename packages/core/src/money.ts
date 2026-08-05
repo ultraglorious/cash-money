@@ -2,6 +2,12 @@
  * Money is stored everywhere as an integer number of the currency's minor units
  * (e.g. cents for EUR). Never floats — all arithmetic is integer arithmetic, and
  * parsing goes through string manipulation so we never round-trip through a float.
+ *
+ * Arithmetic convention: internal computation happens on raw numbers, with a
+ * single `as Cents` cast at trust boundaries (parsers, engine accessors, ops
+ * results). Branded wrapper arithmetic proved to be ceremony without safety and
+ * was removed — the brand's job is stopping cents/ids/counts from mixing across
+ * API surfaces, not policing every addition.
  */
 
 export type Cents = number & { readonly __brand: "Cents" };
@@ -12,28 +18,6 @@ export function cents(n: number): Cents {
     throw new Error(`Cents must be an integer, got ${n}`);
   }
   return n as Cents;
-}
-
-export const ZERO = 0 as Cents;
-
-export function addC(...values: Cents[]): Cents {
-  let sum = 0;
-  for (const v of values) sum += v;
-  return sum as Cents;
-}
-
-export function subC(a: Cents, b: Cents): Cents {
-  return (a - b) as Cents;
-}
-
-export function negC(a: Cents): Cents {
-  return -a as Cents;
-}
-
-export function sumC(values: readonly Cents[]): Cents {
-  let sum = 0;
-  for (const v of values) sum += v;
-  return sum as Cents;
 }
 
 export interface CurrencyConfig {

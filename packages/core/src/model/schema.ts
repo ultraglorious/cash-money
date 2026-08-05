@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { ULID_RE } from "../ids.js";
+import { ISO_DATE_RE, MONTH_KEY_RE } from "../time.js";
 import type {
   Account,
   Budget,
@@ -15,10 +17,10 @@ import type {
  * concern, so a structural cast at this trust boundary is correct.
  */
 
-const ulid = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/, "invalid ULID");
+const ulid = z.string().regex(ULID_RE, "invalid ULID");
 const cents = z.number().int();
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "invalid ISO date");
-const monthKey = z.string().regex(/^\d{4}-\d{2}$/, "invalid month key");
+const isoDate = z.string().regex(ISO_DATE_RE, "invalid ISO date");
+const monthKey = z.string().regex(MONTH_KEY_RE, "invalid month key");
 const fingerprint = z.string().regex(/^[0-9a-f]{64}$/, "invalid fingerprint");
 
 export const CurrencyConfigSchema = z.object({
@@ -110,6 +112,13 @@ export const TransactionSchema = z.object({
   splits: z.array(SplitLineSchema).optional(),
   transfer: TransferRefSchema.optional(),
   source: ImportProvenanceSchema.optional(),
+});
+
+/** Shape of app.json — the index of budgets. Kept here with the other parse boundaries. */
+export const AppIndexSchema = z.object({
+  schemaVersion: z.number().int(),
+  activeBudgetId: ulid.optional(),
+  budgets: z.array(z.object({ id: ulid, name: z.string() })),
 });
 
 export function parseBudget(raw: unknown): Budget {

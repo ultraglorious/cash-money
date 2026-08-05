@@ -36,14 +36,6 @@ export function mapCreditCards(budget: LoadedBudget): CreditCardMap {
   return { paymentCategoryIds, paymentCategoryByCard, cardAccountIds };
 }
 
-export function isPaymentCategory(cc: CreditCardMap, categoryId: Ulid): boolean {
-  return cc.paymentCategoryIds.has(categoryId);
-}
-
-export function isCardAccount(cc: CreditCardMap, accountId: Ulid): boolean {
-  return cc.cardAccountIds.has(accountId);
-}
-
 /** Group-kind lookup used by the engine to classify categories. */
 export function groupKindByCategory(budget: LoadedBudget): Map<Ulid, CategoryGroup["kind"]> {
   const kindByGroup = new Map<Ulid, CategoryGroup["kind"]>();

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { asUlid, fingerprint, newId } from "./ids.js";
+import { ULID_RE, fingerprint, newId } from "./ids.js";
 
 describe("newId", () => {
   it("produces valid, unique ULIDs", () => {
     const a = newId();
     const b = newId();
     expect(a).not.toBe(b);
-    expect(() => asUlid(a)).not.toThrow();
+    expect(a).toMatch(ULID_RE);
   });
 });
 

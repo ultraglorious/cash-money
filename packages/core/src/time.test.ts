@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   addMonths,
   compareMonth,
-  daysBetween,
   monthKeyOf,
   monthRange,
   parseImportMonth,
@@ -38,10 +37,3 @@ describe("month math", () => {
   });
 });
 
-describe("daysBetween", () => {
-  it("counts days regardless of order and across months", () => {
-    expect(daysBetween("2026-05-30", "2026-06-01")).toBe(2);
-    expect(daysBetween("2026-06-01", "2026-05-30")).toBe(2);
-    expect(daysBetween("2026-07-31", "2026-07-31")).toBe(0);
-  });
-});

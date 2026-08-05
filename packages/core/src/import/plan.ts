@@ -1,10 +1,11 @@
-import { newId } from "../ids.js";
+import { newId, type Ulid } from "../ids.js";
 import type { Cents } from "../money.js";
 import { parseImportMonth, type MonthKey } from "../time.js";
 import type { MonthlyAssignment } from "../model/types.js";
 import type { CategoriesResult } from "./categories.js";
-import type { ImportConfig } from "./config.js";
+import { householdBySource, type ImportConfig } from "./config.js";
 import type { NormPlan } from "./planCsv.js";
+import { SEP } from "./text.js";
 
 /**
  * Imports the plan's `Assigned` values only (activity/available are derived by
@@ -25,8 +26,8 @@ export function buildAssignments(
   categories: CategoriesResult,
   config: ImportConfig,
 ): PlanResult {
-  const householdOf = new Map(config.sources.map((s) => [s.sourceKey, s.household]));
-  const assignedByKey = new Map<string, { month: MonthKey; categoryId: string; assigned: number }>();
+  const householdOf = householdBySource(config);
+  const assignedByKey = new Map<string, { month: MonthKey; categoryId: Ulid; assigned: number }>();
   const oracle = new Map<string, { activity: Cents; available: Cents }>();
   let skippedUnresolved = 0;
 
@@ -39,7 +40,7 @@ export function buildAssignments(
       continue;
     }
     const month = parseImportMonth(p.month);
-    const key = `${categoryId}␟${month}`;
+    const key = `${categoryId}${SEP}${month}`;
 
     // Oracle: accumulate exported activity/available across sources.
     const prev = oracle.get(key) ?? { activity: 0 as Cents, available: 0 as Cents };
@@ -57,7 +58,7 @@ export function buildAssignments(
   const assignments: MonthlyAssignment[] = [...assignedByKey.values()].map((a) => ({
     id: newId(),
     month: a.month,
-    categoryId: a.categoryId as MonthlyAssignment["categoryId"],
+    categoryId: a.categoryId,
     assigned: a.assigned as Cents,
   }));
 
