@@ -16,23 +16,6 @@ const MONTH_ABBR: Record<string, number> = {
 };
 
 /**
- * Parse a day-first dotted date "DD.MM.YYYY" (as produced by the CSV register
- * export) into an ISO date "YYYY-MM-DD".
- */
-export function parseImportDate(raw: string): ISODate {
-  const s = raw.trim();
-  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(s);
-  if (!m) throw new Error(`Unrecognized import date: ${JSON.stringify(raw)}`);
-  const [, dd, mm, yyyy] = m;
-  const day = Number(dd);
-  const month = Number(mm);
-  if (month < 1 || month > 12 || day < 1 || day > 31) {
-    throw new Error(`Invalid import date: ${JSON.stringify(raw)}`);
-  }
-  return `${yyyy}-${pad2(month)}-${pad2(day)}`;
-}
-
-/**
  * Parse a month label "Aug 2026" (as produced by the CSV plan export) into a
  * MonthKey "2026-08".
  */

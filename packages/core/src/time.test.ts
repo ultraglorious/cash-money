@@ -5,21 +5,8 @@ import {
   daysBetween,
   monthKeyOf,
   monthRange,
-  parseImportDate,
   parseImportMonth,
 } from "./time.js";
-
-describe("parseImportDate (DD.MM.YYYY)", () => {
-  it("parses day-first dotted dates", () => {
-    expect(parseImportDate("01.09.2026")).toBe("2026-09-01");
-    expect(parseImportDate("10.07.2026")).toBe("2026-07-10");
-    expect(parseImportDate("31.12.2018")).toBe("2018-12-31");
-  });
-  it("rejects malformed dates", () => {
-    expect(() => parseImportDate("2026-09-01")).toThrow();
-    expect(() => parseImportDate("13.31.2026")).toThrow();
-  });
-});
 
 describe("parseImportMonth (MMM YYYY)", () => {
   it("parses month names", () => {

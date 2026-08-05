@@ -2,9 +2,10 @@ import { newId } from "../ids.js";
 import type { ISODate } from "../time.js";
 import { SCHEMA_VERSION, type Budget, type LoadedBudget } from "../model/types.js";
 import type { Cents } from "../money.js";
-import { parsePlanCsv, parseRegisterCsv } from "./csv.js";
 import type { ImportConfig } from "./config.js";
-import { normalizePlan, normalizeRegister } from "./normalize.js";
+import { builtinFormat } from "./formats/index.js";
+import { mapRegisterRows, parseCsv } from "./register.js";
+import { parsePlan, type NormPlan } from "./planCsv.js";
 import { buildStagedTransactions } from "./transactions.js";
 import { reconstructTransfers, type TransferReport } from "./transfers.js";
 import { buildAccounts } from "./accounts.js";
@@ -16,7 +17,8 @@ import type { StagedTxn } from "./staged.js";
 export interface SourceInput {
   sourceKey: string;
   registerCsv: string;
-  planCsv: string;
+  /** Assigned-amounts CSV; only zip-register-plan packaged sources have one. */
+  planCsv?: string;
 }
 
 export interface ImportReport {
@@ -32,7 +34,7 @@ export interface ImportReport {
   unapproved: number;
   unresolvedAccounts: number;
   unresolvedCategories: number;
-  /** Net signed balance across all accounts (must be unchanged by stitching). */
+  /** Net signed balance across all accounts (an integrity checksum). */
   netAcrossAccounts: Cents;
   warnings: string[];
 }
@@ -53,35 +55,50 @@ export function stageImport(
   config: ImportConfig,
   createdAt: ISODate,
 ): StagingResult {
-  const labelOf = new Map(config.sources.map((s) => [s.sourceKey, s.label]));
+  const sourceCfg = new Map(config.sources.map((s) => [s.sourceKey, s]));
+  const defaultFormat = builtinFormat("lib:budget-export-register")!;
 
   const staged: StagedTxn[] = [];
-  const plan: ReturnType<typeof normalizePlan> = [];
+  const plan: NormPlan[] = [];
   const sourcesMeta: ImportReport["sources"] = [];
   const warnings: string[] = [];
   let splitsReconstructed = 0;
 
   for (const input of inputs) {
-    const regRows = parseRegisterCsv(input.registerCsv);
-    const planRows = parsePlanCsv(input.planCsv);
-    const opts = { sourceKey: input.sourceKey, currency: config.currency, exportDate: config.exportDate };
-    const norm = normalizeRegister(regRows, opts);
-    const stagedForSource = buildStagedTransactions(norm);
+    const cfg = sourceCfg.get(input.sourceKey);
+    const format = cfg?.format ?? defaultFormat;
+    const mapped = mapRegisterRows(parseCsv(input.registerCsv), format, {
+      sourceKey: input.sourceKey,
+      currency: config.currency,
+      exportDate: cfg?.exportDate ?? config.exportDate,
+    });
+    if (mapped.errors.length > 0) {
+      // A snapshot import must be perfect; surface the first problems and stop.
+      throw new Error(`[${input.sourceKey}] ${mapped.errors.slice(0, 3).join("; ")}`);
+    }
+    const planRows = input.planCsv
+      ? parsePlan(input.planCsv, {
+          sourceKey: input.sourceKey,
+          currency: config.currency,
+          semantics: format.semantics,
+        })
+      : [];
+    const stagedForSource = buildStagedTransactions(mapped.rows);
     for (const t of stagedForSource) {
       if (t.sourceRows.length > 1) splitsReconstructed++;
       if (t.warnings) warnings.push(...t.warnings.map((w) => `[${input.sourceKey}] ${w}`));
     }
     staged.push(...stagedForSource);
-    plan.push(...normalizePlan(planRows, opts));
+    plan.push(...planRows);
     sourcesMeta.push({
       sourceKey: input.sourceKey,
-      label: labelOf.get(input.sourceKey) ?? input.sourceKey,
-      registerRows: regRows.length,
+      label: cfg?.label ?? input.sourceKey,
+      registerRows: mapped.rows.length,
       planRows: planRows.length,
     });
   }
 
-  const transfers = reconstructTransfers(staged, config.stitchRules);
+  const transfers = reconstructTransfers(staged);
   const accounts = buildAccounts(staged, config);
   const categories = buildCategories(staged, plan, config, accounts);
   const resolved = resolveTransactions(staged, accounts, categories, config);

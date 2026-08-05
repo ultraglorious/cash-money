@@ -1,4 +1,6 @@
 import { fingerprint, type Fingerprint } from "../ids.js";
+import type { StagedTxn } from "./staged.js";
+import { fold } from "./text.js";
 
 /**
  * Content-based identity for imported rows. Because the export has no stable IDs,
@@ -66,4 +68,30 @@ export function assignIdentities<T extends { naturalKey: Fingerprint; sourceRow:
     const occurrenceIndex = index.get(it)!;
     return { ...it, occurrenceIndex, identity: identityOf(it.naturalKey, occurrenceIndex) };
   });
+}
+
+/** The category part of a staged row's natural key. */
+function categorySignature(t: StagedTxn): string {
+  if (t.transfer) return `xfer:${t.transfer.counterAccountFold}`;
+  return t.lines.map((l) => `${l.groupFold}/${l.categoryFold}`).join("+");
+}
+
+/** Natural key + occurrence index + identity for every staged transaction. */
+export function identifyStaged(
+  staged: readonly StagedTxn[],
+): Array<{ t: StagedTxn } & Identified & { sourceRow: number }> {
+  const withKeys = staged.map((t) => ({
+    t,
+    naturalKey: naturalKeyOf({
+      sourceKey: t.sourceKey,
+      accountFold: t.accountFold,
+      date: t.date,
+      amount: t.amount,
+      payeeFold: t.payeeFold,
+      categoryFold: categorySignature(t),
+      memoFold: fold(t.memo),
+    }),
+    sourceRow: t.sourceRows[0]!,
+  }));
+  return assignIdentities(withKeys);
 }

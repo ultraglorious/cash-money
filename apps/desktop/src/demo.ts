@@ -40,7 +40,6 @@ export function demoBudget(): LoadedBudget {
   const phone = cat("Phone", gBills);
   const cardPay = cat("Visa", gCards);
   cardPay.linkedAccountId = card.id;
-  card.paymentCategoryId = cardPay.id;
   const jGroceries = cat("Groceries", gJoint);
   const jDining = cat("Dining Out", gJoint);
   const jLux = cat("Luxuries", gJointFun);

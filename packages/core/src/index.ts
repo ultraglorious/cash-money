@@ -13,8 +13,17 @@ export * from "./persistence/repository.js";
 export { InMemoryFileSystem } from "./persistence/memoryFs.js";
 export * from "./engine/index.js";
 export * as ops from "./ops.js";
-export * from "./import/csv.js";
-export * from "./import/bankCsv.js";
+export * from "./import/format.js";
+export { builtinFormat, builtinFormats } from "./import/formats/index.js";
+export { guessFormat, type FormatGuess } from "./import/guess.js";
+export { parseCsv, parseDateAs, mapRegisterRows, type ParsedCsv, type NormTxn, type MapRegisterOptions, type MapRegisterResult } from "./import/register.js";
 export * from "./import/config.js";
 export { stageImport, type SourceInput, type ImportReport, type StagingResult } from "./import/pipeline.js";
-export { reconcileTransactions, type ReconcileReport, type ReconcileResult } from "./import/reconcile.js";
+export { stageStatement, type StatementOptions, type StatementReport, type StatementResult } from "./import/statement.js";
+export {
+  mergeStatement,
+  reconcileTransactions,
+  type ReconcileReport,
+  type ReconcileResult,
+  type StatementMergeReport,
+} from "./import/reconcile.js";

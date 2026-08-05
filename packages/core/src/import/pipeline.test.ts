@@ -6,8 +6,8 @@ import { stageImport } from "./pipeline.js";
 
 /**
  * A miniature two-budget merge exercising: income, a credit-card purchase + payoff
- * transfer, a split, a cross-budget funding transfer (recorded as plain payees on
- * each side), and a false-positive same-amount bank payee that must NOT stitch.
+ * transfer, a split, and a cross-budget funding movement (recorded as plain payees
+ * on each side) that must be preserved as-is, never collapsed into a transfer.
  */
 
 // Personal budget: checking + credit card.
@@ -43,9 +43,6 @@ const CONFIG: ImportConfig = {
     { sourceKey: "personal", label: "Personal", household: "personal" },
     { sourceKey: "joint", label: "Joint", household: "joint" },
   ],
-  stitchRules: [
-    { aSourceKey: "personal", aLinkPayee: "Joint Account", bSourceKey: "joint", bLinkPayee: "Me", windowDays: 3 },
-  ],
   exportDate: "2026-08-03",
   trackingAccountHints: ["investment", "deposit", "etf", "shares"],
 };
@@ -76,18 +73,21 @@ describe("stageImport end-to-end merge", () => {
     expect(new Set(groceriesGroups.map((g) => g.household)).size).toBeGreaterThan(1);
   });
 
-  it("stitches the cross-budget funding into one linked transfer (not income)", () => {
-    const { staging, report } = run();
-    expect(report.transfers.crossMatched).toBe(1);
-    // Two legs share a pairId; the joint inflow is no longer income.
+  it("keeps the cross-budget funding as-is: an expense on one side, income on the other", () => {
+    const { staging } = run();
+    // Only the within-budget CC payoff becomes a linked transfer (2 legs, 1 pair).
     const xfer = staging.transactions.filter((t) => t.transfer);
-    const pairIds = new Set(xfer.map((t) => t.transfer!.pairId));
-    // within-budget CC payoff (1 pair = 2 legs) + cross-budget (2 legs) = 4 legs, 2 pairs
-    expect(xfer).toHaveLength(4);
-    expect(pairIds.size).toBe(2);
+    expect(xfer).toHaveLength(2);
+    expect(new Set(xfer.map((t) => t.transfer!.pairId)).size).toBe(1);
+    // The funding rows stay plain: categorised outflow + income inflow.
+    const out = staging.transactions.find((t) => t.payee === "Joint Account")!;
+    const inn = staging.transactions.find((t) => t.payee === "Me")!;
+    expect(out.transfer).toBeUndefined();
+    expect(out.categoryId).toBeTruthy();
+    expect(inn.transfer).toBeUndefined();
   });
 
-  it("does not stitch the same-amount own-bank fee rows", () => {
+  it("leaves same-amount own-bank fee rows alone on both sides", () => {
     const { staging } = run();
     const bank = staging.transactions.filter((t) => t.payee === "Acme Bank");
     expect(bank).toHaveLength(2);
@@ -101,7 +101,52 @@ describe("stageImport end-to-end merge", () => {
     expect(split!.splits).toHaveLength(2);
     expect(report.creditCardLinks).toBe(1);
     const card = staging.accounts.find((a) => a.name === "Card")!;
-    expect(card.paymentCategoryId).toBeTruthy();
+    expect(staging.categories.some((c) => c.linkedAccountId === card.id)).toBe(true);
+  });
+
+  it("imports a plan-less source: transactions and categories, no assignments", () => {
+    const { staging, report } = stageImport(
+      [
+        { sourceKey: "personal", registerCsv: PERSONAL_REG, planCsv: PERSONAL_PLAN },
+        { sourceKey: "joint", registerCsv: JOINT_REG }, // no plan file
+      ],
+      CONFIG,
+      "2026-08-03",
+    );
+    expect(report.sources[1]!.planRows).toBe(0);
+    // The joint source still contributes its accounts, categories, and rows...
+    expect(staging.accounts.some((a) => a.name === "Joint Account")).toBe(true);
+    const jointGroups = staging.groups.filter((g) => g.household === "joint");
+    expect(jointGroups.length).toBeGreaterThan(0);
+    // ...but no assignments (those come only from a plan CSV).
+    const jointCatIds = new Set(
+      staging.categories.filter((c) => jointGroups.some((g) => g.id === c.groupId)).map((c) => c.id),
+    );
+    expect(staging.assignments.some((a) => jointCatIds.has(a.categoryId))).toBe(false);
+  });
+
+  it("applies each source's own exportDate to approval", () => {
+    // Personal's as-of predates its 15.01 row (unapproved); joint's does not.
+    const cfg: ImportConfig = {
+      ...CONFIG,
+      exportDate: undefined,
+      sources: [
+        { sourceKey: "personal", label: "Personal", household: "personal", exportDate: "2026-01-12" },
+        { sourceKey: "joint", label: "Joint", household: "joint", exportDate: "2026-08-03" },
+      ],
+    };
+    const { staging } = stageImport(
+      [
+        { sourceKey: "personal", registerCsv: PERSONAL_REG, planCsv: PERSONAL_PLAN },
+        { sourceKey: "joint", registerCsv: JOINT_REG, planCsv: JOINT_PLAN },
+      ],
+      cfg,
+      "2026-08-03",
+    );
+    const personalTransfer = staging.transactions.find((t) => t.payee === "Transfer : Card");
+    expect(personalTransfer!.approved).toBe(false); // 15.01 > personal's 12.01 as-of
+    const jointRow = staging.transactions.find((t) => t.payee === "Grocer");
+    expect(jointRow!.approved).toBe(true); // 20.01 <= joint's as-of
   });
 
   it("conserves money and produces a coherent budget the engine can compute", () => {

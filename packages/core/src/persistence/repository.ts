@@ -1,5 +1,7 @@
+import { z } from "zod";
 import { newId, type Ulid } from "../ids.js";
 import { monthKeyOf, type ISODate, type MonthKey } from "../time.js";
+import { RegisterFormatSchema, type RegisterFormat } from "../import/format.js";
 import {
   parseAccount,
   parseBudget,
@@ -52,6 +54,25 @@ export interface AppIndex {
 
 const EMPTY_APP: AppIndex = { schemaVersion: SCHEMA_VERSION, budgets: [] };
 
+/** A user-saved register format (library formats ship in code, never here). */
+export interface SavedFormat {
+  format: RegisterFormat;
+  /** Last time the user imported with it (drives picker ordering). */
+  lastUsed?: ISODate;
+}
+
+const SavedFormatSchema = z.object({
+  format: RegisterFormatSchema,
+  lastUsed: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+}) as z.ZodType<SavedFormat>;
+
+/** One statement source: an existing account fed by a format under a stable key. */
+export interface ImportSourceEntry {
+  accountId: Ulid;
+  formatId: string;
+  sourceKey: string;
+}
+
 interface CategoriesFile {
   groups: CategoryGroup[];
   categories: Category[];
@@ -80,6 +101,45 @@ export class BudgetRepository {
     else app.budgets.push(entry);
     if (makeActive) app.activeBudgetId = entry.id;
     await this.saveApp(app);
+  }
+
+  // ---- Saved register formats (app-wide) ------------------------------------
+
+  /** Load user-saved register formats; invalid entries are dropped, not fatal. */
+  async loadFormats(): Promise<SavedFormat[]> {
+    const text = await this.fs.readTextFile(layout.FORMATS_FILE);
+    if (text === null) return [];
+    const raw: unknown = JSON.parse(text);
+    if (!Array.isArray(raw)) return [];
+    const out: SavedFormat[] = [];
+    for (const entry of raw) {
+      const parsed = SavedFormatSchema.safeParse(entry);
+      if (parsed.success) out.push(parsed.data);
+    }
+    return out;
+  }
+
+  async saveFormats(formats: readonly SavedFormat[]): Promise<void> {
+    await this.fs.writeTextFileAtomic(layout.FORMATS_FILE, stableJson(formats));
+  }
+
+  // ---- Statement sources (per budget) ---------------------------------------
+
+  /**
+   * The registry of statement sources: which existing account is fed by which
+   * format, under which stable sourceKey. The sourceKey is minted once per
+   * account and reused for every later statement import — that stability is
+   * what makes statement re-import idempotent.
+   */
+  async loadImportSources(budgetId: string): Promise<ImportSourceEntry[]> {
+    const text = await this.fs.readTextFile(layout.importSourcesFile(budgetId));
+    if (text === null) return [];
+    const raw: unknown = JSON.parse(text);
+    return Array.isArray(raw) ? (raw as ImportSourceEntry[]) : [];
+  }
+
+  async saveImportSources(budgetId: string, entries: readonly ImportSourceEntry[]): Promise<void> {
+    await this.fs.writeTextFileAtomic(layout.importSourcesFile(budgetId), stableJson(entries));
   }
 
   // ---- Whole-budget save/load ----------------------------------------------

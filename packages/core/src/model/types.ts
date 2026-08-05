@@ -43,8 +43,6 @@ export interface Account {
    * breakdown. A user-supplied string, never hardcoded in source.
    */
   household?: string;
-  /** creditCard only: the payment-tracking category that funds this card. */
-  paymentCategoryId?: Ulid;
 }
 
 export interface CategoryGroup {

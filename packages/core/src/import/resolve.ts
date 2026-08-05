@@ -1,23 +1,16 @@
-import { fold } from "./normalize.js";
 import { newId, type Ulid } from "../ids.js";
 import type { Cents } from "../money.js";
 import type { SplitLine, Transaction } from "../model/types.js";
 import type { AccountsResult } from "./accounts.js";
 import type { CategoriesResult } from "./categories.js";
 import type { ImportConfig } from "./config.js";
-import { assignIdentities, naturalKeyOf } from "./identity.js";
+import { identifyStaged } from "./identity.js";
 import type { StagedTxn } from "./staged.js";
 
 export interface ResolveResult {
   transactions: Transaction[];
   unresolvedAccounts: number;
   unresolvedCategories: number;
-}
-
-/** Canonical category signature for the natural key (order-preserving for splits). */
-function categorySignature(t: StagedTxn): string {
-  if (t.transfer) return `xfer:${t.transfer.counterAccountFold}`;
-  return t.lines.map((l) => `${l.groupFold}/${l.categoryFold}`).join("+");
 }
 
 export function resolveTransactions(
@@ -27,22 +20,12 @@ export function resolveTransactions(
   config: ImportConfig,
 ): ResolveResult {
   const householdOf = new Map(config.sources.map((s) => [s.sourceKey, s.household]));
+  // Provenance timestamps come from the source's own "as of" date; a row's own
+  // date is the principled floor when no export date was declared at all.
+  const exportDateOf = new Map(config.sources.map((s) => [s.sourceKey, s.exportDate ?? config.exportDate]));
 
   // Natural keys + stable identities across the whole snapshot.
-  const withKeys = staged.map((t) => ({
-    t,
-    naturalKey: naturalKeyOf({
-      sourceKey: t.sourceKey,
-      accountFold: t.accountFold,
-      date: t.date,
-      amount: t.amount,
-      payeeFold: t.payeeFold,
-      categoryFold: categorySignature(t),
-      memoFold: fold(t.memo),
-    }),
-    sourceRow: t.sourceRows[0]!,
-  }));
-  const identified = assignIdentities(withKeys);
+  const identified = identifyStaged(staged);
 
   // Map staged transfer pair keys -> a single ULID per transfer.
   const pairIdByStaged = new Map<string, Ulid>();
@@ -58,11 +41,18 @@ export function resolveTransactions(
   const transactions: Transaction[] = identified.map(({ t, naturalKey, occurrenceIndex, identity }) => {
     const household = householdOf.get(t.sourceKey) ?? t.sourceKey;
     const accountId = accounts.resolve(t.sourceKey, t.accountFold);
-    if (!accountId) unresolvedAccounts++;
+    if (!accountId) {
+      // Accounts are seeded from these same staged rows, so this is unreachable
+      // unless the pipeline itself is broken. Never fall back to a placeholder
+      // id: an invalid ULID would save fine and then fail schema validation on
+      // every subsequent load, leaving the budget permanently unloadable.
+      unresolvedAccounts++;
+      throw new Error(`Import bug: no account resolved for source row ${t.sourceRows[0]} (${t.sourceKey})`);
+    }
 
     const base: Transaction = {
       id: newId(),
-      accountId: accountId ?? ("" as Ulid),
+      accountId,
       date: t.date,
       effectiveDate: t.effectiveDate,
       payee: t.payee,
@@ -76,8 +66,8 @@ export function resolveTransactions(
         naturalKey,
         occurrenceIndex,
         identity,
-        firstSeenExportTs: config.exportDate,
-        lastSeenExportTs: config.exportDate,
+        firstSeenExportTs: exportDateOf.get(t.sourceKey) ?? t.date,
+        lastSeenExportTs: exportDateOf.get(t.sourceKey) ?? t.date,
       },
     };
 

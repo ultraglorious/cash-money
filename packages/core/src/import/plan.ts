@@ -4,7 +4,7 @@ import { parseImportMonth, type MonthKey } from "../time.js";
 import type { MonthlyAssignment } from "../model/types.js";
 import type { CategoriesResult } from "./categories.js";
 import type { ImportConfig } from "./config.js";
-import type { NormPlan } from "./normalize.js";
+import type { NormPlan } from "./planCsv.js";
 
 /**
  * Imports the plan's `Assigned` values only (activity/available are derived by

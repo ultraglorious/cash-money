@@ -16,7 +16,6 @@ const EXTRA = '"Checking","","07.01.2026","Cafe","Everyday: Dining","Everyday","
 const CONFIG: ImportConfig = {
   currency: EUR,
   sources: [{ sourceKey: "s", label: "S", household: "s" }],
-  stitchRules: [],
   exportDate: "2026-08-03",
 };
 

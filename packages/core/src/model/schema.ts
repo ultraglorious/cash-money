@@ -47,7 +47,6 @@ export const AccountSchema = z.object({
   closed: z.boolean(),
   sortOrder: z.number(),
   household: z.string().optional(),
-  paymentCategoryId: ulid.optional(),
 });
 
 export const CategoryGroupSchema = z.object({
