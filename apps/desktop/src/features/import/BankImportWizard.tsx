@@ -17,14 +17,10 @@ import {
 import { IconAlertTriangle, IconFileImport } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  dedupeBankDrafts,
-  mapBankRows,
-  newId,
-  parseBankCsv,
-  type BankDateFormat,
-  type BankDraft,
-  type BankMapping,
-  type Cents,
+  parseCsv,
+  stageStatement,
+  type ImportDateFormat,
+  type RegisterFormat,
   type Transaction,
   type Ulid,
 } from "@cash-money/core";
@@ -34,8 +30,16 @@ import { isTauri, readTextAbs } from "../../platform/tauriFs";
 
 interface Parsed {
   fileName: string;
+  text: string;
   headers: string[];
-  rows: Record<string, string>[];
+  rowCount: number;
+}
+
+interface Preview {
+  merged: Transaction[];
+  added: Transaction[];
+  alreadyPresent: number;
+  errors: string[];
 }
 
 const NONE = "— none —";
@@ -46,7 +50,7 @@ export function BankImportWizard({ opened, onClose }: { opened: boolean; onClose
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const [accountId, setAccountId] = useState<string | null>(null);
   const [dateColumn, setDateColumn] = useState("");
-  const [dateFormat, setDateFormat] = useState<BankDateFormat>("iso");
+  const [dateFormat, setDateFormat] = useState<ImportDateFormat>("iso");
   const [payeeColumn, setPayeeColumn] = useState("");
   const [memoColumn, setMemoColumn] = useState<string>(NONE);
   const [amountMode, setAmountMode] = useState<"single" | "split">("single");
@@ -54,7 +58,7 @@ export function BankImportWizard({ opened, onClose }: { opened: boolean; onClose
   const [outflowPositive, setOutflowPositive] = useState(false);
   const [inflowColumn, setInflowColumn] = useState("");
   const [outflowColumn, setOutflowColumn] = useState("");
-  const [preview, setPreview] = useState<{ fresh: BankDraft[]; duplicates: number; errors: string[] } | null>(null);
+  const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const close = () => {
@@ -70,8 +74,8 @@ export function BankImportWizard({ opened, onClose }: { opened: boolean; onClose
       const selected = await open({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
       if (!selected || Array.isArray(selected)) return;
       const text = await readTextAbs(selected);
-      const { headers, rows } = parseBankCsv(text);
-      setParsed({ fileName: selected.split(/[/\\]/).pop() ?? selected, headers, rows });
+      const { headers, rows } = parseCsv(text);
+      setParsed({ fileName: selected.split(/[/\\]/).pop() ?? selected, text, headers, rowCount: rows.length });
       setPreview(null);
       // Best-effort auto-guess of the mapping.
       setDateColumn(find(headers, /date/i));
@@ -94,38 +98,44 @@ export function BankImportWizard({ opened, onClose }: { opened: boolean; onClose
     }
   };
 
-  const buildMapping = (): BankMapping => ({
-    dateColumn,
-    dateFormat,
+  const buildFormat = (): RegisterFormat => ({
+    id: "adhoc:bank-statement",
+    name: "Bank statement",
+    date: { column: dateColumn, format: dateFormat },
     payeeColumn,
     ...(memoColumn !== NONE ? { memoColumn } : {}),
     amount:
       amountMode === "single"
-        ? { mode: "single", column: amountColumn, outflowPositive }
-        : { mode: "split", inflowColumn, outflowColumn },
+        ? { mode: "signed", column: amountColumn, outflowPositive }
+        : { mode: "inOut", inflowColumn, outflowColumn },
   });
 
   const runPreview = () => {
     if (!parsed || !accountId) return;
-    const { drafts, errors } = mapBankRows(parsed.rows, buildMapping(), app.currency);
-    const { fresh, duplicates } = dedupeBankDrafts(app.budget.transactions, accountId as Ulid, drafts);
-    setPreview({ fresh, duplicates, errors });
+    setError(null);
+    try {
+      const { merged, report } = stageStatement(app.budget, parsed.text, buildFormat(), {
+        // Stable per account, so re-importing the same or an overlapping
+        // statement into this account is a no-op for rows already present.
+        sourceKey: `stmt:${accountId}`,
+        accountId: accountId as Ulid,
+        currency: app.currency,
+      });
+      setPreview({
+        merged,
+        added: merged.slice(app.budget.transactions.length),
+        alreadyPresent: report.matched + report.legacyMatched,
+        errors: report.errors,
+      });
+    } catch (e) {
+      setError(String(e));
+      setPreview(null);
+    }
   };
 
   const commit = () => {
-    if (!parsed || !accountId || !preview) return;
-    const txs: Transaction[] = preview.fresh.map((d) => ({
-      id: newId(),
-      accountId: accountId as Ulid,
-      date: d.date,
-      effectiveDate: d.date,
-      payee: d.payee,
-      memo: d.memo,
-      amount: d.amount,
-      cleared: "cleared",
-      approved: true,
-    }));
-    app.addTransactions(txs);
+    if (!accountId || !preview) return;
+    app.setTransactions(preview.merged);
     app.setView({ kind: "account", accountId: accountId as Ulid });
     close();
   };
@@ -145,7 +155,7 @@ export function BankImportWizard({ opened, onClose }: { opened: boolean; onClose
           <Button leftSection={<IconFileImport size={16} />} onClick={pick} disabled={!isTauri()}>
             Choose CSV file…
           </Button>
-          {parsed && <Text size="sm" c="dimmed">{parsed.fileName} · {parsed.rows.length} rows</Text>}
+          {parsed && <Text size="sm" c="dimmed">{parsed.fileName} · {parsed.rowCount} rows</Text>}
         </Group>
 
         {error && <Alert color="red" icon={<IconAlertTriangle size={16} />}>{error}</Alert>}
@@ -163,7 +173,7 @@ export function BankImportWizard({ opened, onClose }: { opened: boolean; onClose
                   { value: "mdy", label: "MM/DD/YYYY" },
                 ]}
                 value={dateFormat}
-                onChange={(v) => v && setDateFormat(v as BankDateFormat)}
+                onChange={(v) => v && setDateFormat(v as ImportDateFormat)}
                 allowDeselect={false}
               />
             </Group>
@@ -201,8 +211,8 @@ export function BankImportWizard({ opened, onClose }: { opened: boolean; onClose
         {preview && (
           <Paper withBorder p="md" radius="md">
             <Group gap="xs" mb="xs">
-              <Badge color="teal" variant="light">{preview.fresh.length} to import</Badge>
-              {preview.duplicates > 0 && <Badge color="gray" variant="light">{preview.duplicates} duplicates skipped</Badge>}
+              <Badge color="teal" variant="light">{preview.added.length} to import</Badge>
+              {preview.alreadyPresent > 0 && <Badge color="gray" variant="light">{preview.alreadyPresent} already present</Badge>}
               {preview.errors.length > 0 && <Badge color="red" variant="light">{preview.errors.length} errors</Badge>}
             </Group>
             {preview.errors.length > 0 && (
@@ -215,20 +225,20 @@ export function BankImportWizard({ opened, onClose }: { opened: boolean; onClose
                 <Table.Tr><Table.Th>Date</Table.Th><Table.Th>Payee</Table.Th><Table.Th ta="right">Amount</Table.Th></Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {preview.fresh.slice(0, 8).map((d, i) => (
-                  <Table.Tr key={i}>
-                    <Table.Td>{d.date}</Table.Td>
-                    <Table.Td><Text size="sm" lineClamp={1}>{d.payee}</Text></Table.Td>
-                    <Table.Td ta="right"><Text size="sm" c={d.amount < 0 ? "red" : "teal"}>{money(d.amount as Cents, app.currency)}</Text></Table.Td>
+                {preview.added.slice(0, 8).map((t) => (
+                  <Table.Tr key={t.id}>
+                    <Table.Td>{t.date}</Table.Td>
+                    <Table.Td><Text size="sm" lineClamp={1}>{t.payee}</Text></Table.Td>
+                    <Table.Td ta="right"><Text size="sm" c={t.amount < 0 ? "red" : "teal"}>{money(t.amount, app.currency)}</Text></Table.Td>
                   </Table.Tr>
                 ))}
               </Table.Tbody>
             </Table>
-            {preview.fresh.length > 8 && <Text size="xs" c="dimmed" mt={4}>…and {preview.fresh.length - 8} more</Text>}
+            {preview.added.length > 8 && <Text size="xs" c="dimmed" mt={4}>…and {preview.added.length - 8} more</Text>}
             <Divider my="md" />
             <Group justify="flex-end">
-              <Button color="teal" onClick={commit} disabled={preview.fresh.length === 0}>
-                Import {preview.fresh.length} transaction{preview.fresh.length === 1 ? "" : "s"}
+              <Button color="teal" onClick={commit} disabled={preview.added.length === 0}>
+                Import {preview.added.length} transaction{preview.added.length === 1 ? "" : "s"}
               </Button>
             </Group>
           </Paper>

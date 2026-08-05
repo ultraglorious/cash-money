@@ -16,16 +16,13 @@ export * as ops from "./ops.js";
 export * from "./import/format.js";
 export { builtinFormat, builtinFormats } from "./import/formats/index.js";
 export { parseCsv, parseDateAs, mapRegisterRows, type ParsedCsv, type NormTxn, type MapRegisterOptions, type MapRegisterResult } from "./import/register.js";
-// bankCsv is on its way out (statement import moves onto the shared pipeline);
-// export only what the current wizard still uses, avoiding the AmountMapping clash.
-export {
-  dedupeBankDrafts,
-  mapBankRows,
-  parseBankCsv,
-  type BankDateFormat,
-  type BankDraft,
-  type BankMapping,
-} from "./import/bankCsv.js";
 export * from "./import/config.js";
 export { stageImport, type SourceInput, type ImportReport, type StagingResult } from "./import/pipeline.js";
-export { reconcileTransactions, type ReconcileReport, type ReconcileResult } from "./import/reconcile.js";
+export { stageStatement, type StatementOptions, type StatementReport, type StatementResult } from "./import/statement.js";
+export {
+  mergeStatement,
+  reconcileTransactions,
+  type ReconcileReport,
+  type ReconcileResult,
+  type StatementMergeReport,
+} from "./import/reconcile.js";

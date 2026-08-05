@@ -78,6 +78,7 @@ interface AppState {
   getAssigned: (month: MonthKey, categoryId: Ulid) => Cents;
   addTransaction: (tx: Transaction) => void;
   addTransactions: (txs: Transaction[]) => void;
+  setTransactions: (txs: Transaction[]) => void;
   updateTransaction: (id: Ulid, patch: Partial<Omit<Transaction, "id">>) => void;
   deleteTransaction: (id: Ulid) => void;
   approveTransaction: (id: Ulid) => void;
@@ -262,6 +263,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     getAssigned: (m, categoryId) => ops.getAssigned(budget, m, categoryId),
     addTransaction: (tx) => apply((b) => ops.addTransaction(b, tx)),
     addTransactions: (txs) => apply((b) => ops.addTransactions(b, txs)),
+    setTransactions: (txs) => apply((b) => ops.setTransactions(b, txs)),
     updateTransaction: (id, patch) => apply((b) => ops.updateTransaction(b, id, patch)),
     deleteTransaction: (id) => apply((b) => ops.deleteTransaction(b, id)),
     approveTransaction: (id) => apply((b) => ops.approveTransaction(b, id)),

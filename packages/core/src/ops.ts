@@ -262,9 +262,14 @@ export function addTransaction(b: LoadedBudget, tx: Transaction): LoadedBudget {
   return { ...b, transactions: [...b.transactions, tx] };
 }
 
-/** Append many transactions at once (e.g. a bank-statement import). */
+/** Append many transactions at once. */
 export function addTransactions(b: LoadedBudget, txs: readonly Transaction[]): LoadedBudget {
   return { ...b, transactions: [...b.transactions, ...txs] };
+}
+
+/** Replace the whole transaction list (e.g. committing a statement merge). */
+export function setTransactions(b: LoadedBudget, txs: readonly Transaction[]): LoadedBudget {
+  return { ...b, transactions: [...txs] };
 }
 
 export function updateTransaction(
