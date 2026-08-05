@@ -110,7 +110,9 @@ export function computeProjection(budget: LoadedBudget): Projection {
 
     if (t.transfer) {
       // Transfer leg: no category activity. Relevant only if it hits a card,
-      // or if it crosses households (then it funds/defunds a household's RTA).
+      // or if it crosses households — then it moves assignable money between the
+      // two household pools (out of the sender, into the receiver). Both legs are
+      // counted so the movement nets to zero globally and money is conserved.
       if (cc.cardAccountIds.has(t.accountId)) bump(cardTransfer, t.accountId, m, t.amount);
       const counter = accountById.get(t.transfer.counterAccountId);
       if (counter && counter.onBudget && (counter.household ?? GENERAL_HH) !== hhOfAccount(t.accountId)) {
@@ -121,7 +123,16 @@ export function computeProjection(budget: LoadedBudget): Projection {
 
     const lines = t.splits ?? [{ categoryId: t.categoryId, amount: t.amount }];
     for (const line of lines) {
-      if (!line.categoryId) continue; // uncategorized (e.g. starting balance)
+      if (!line.categoryId) {
+        // Uncategorized money on a cash account — a starting balance or a stray
+        // uncategorized deposit — is Ready-to-Assign income. Cards are skipped:
+        // their opening balance is debt, not assignable income.
+        if (!cc.cardAccountIds.has(t.accountId)) {
+          bumpMonth(income, m, line.amount);
+          bump(incomeByHh, hhOfAccount(t.accountId), m, line.amount);
+        }
+        continue;
+      }
       if (isIncome(line.categoryId)) {
         bumpMonth(income, m, line.amount);
         bump(incomeByHh, hhOfAccount(t.accountId), m, line.amount);
@@ -179,19 +190,13 @@ export function computeProjection(budget: LoadedBudget): Projection {
     available.set(c.id, s);
   }
 
-  // --- Ready to Assign (cumulative income − cumulative assigned) -------------
-  const rta: Series = new Map();
-  {
-    let cumIncome = 0;
-    let cumAssigned = 0;
-    for (const m of months) {
-      cumIncome += income.get(m) ?? 0;
-      for (const c of budgetable) cumAssigned += assigned.get(c.id)?.get(m) ?? 0;
-      rta.set(m, cumIncome - cumAssigned);
-    }
-  }
-
-  // --- Ready to Assign per household (sums to the global rta) -----------------
+  // --- Ready to Assign per household ------------------------------------------
+  // Each household is its own money pool. RTA(m) = cumulative(income + funding
+  // received from another household) − cumulative(assigned). The two source
+  // budgets accounted for cross-household funding differently (the receiver as
+  // income, the sender as an assigned funding category), so we honour both: the
+  // receiver's inflow leg funds it here, and the sender's assignment already
+  // reduced the sender above. The global banner is the sum across households.
   const presentHouseholds = new Set<string>([
     ...budget.groups.map((g) => g.household ?? GENERAL_HH),
     ...budget.accounts.map((a) => a.household ?? GENERAL_HH),
@@ -215,6 +220,14 @@ export function computeProjection(budget: LoadedBudget): Projection {
       s.set(m, cumIn - cumAssigned);
     }
     rtaByHh.set(h, s);
+  }
+
+  // --- Global Ready to Assign (sum across household pools) --------------------
+  const rta: Series = new Map();
+  for (const m of months) {
+    let sum = 0;
+    for (const h of households) sum += rtaByHh.get(h)?.get(m) ?? 0;
+    rta.set(m, sum);
   }
 
   // --- Accessors --------------------------------------------------------------

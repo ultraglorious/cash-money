@@ -100,8 +100,16 @@ export function normalizeRegister(rows: RawRegisterRow[], opts: NormalizeOptions
     const categoryFold = fold(r.category);
     const memo = trimN(r.memo);
 
+    // A "Transfer :" payee is a within-budget transfer ONLY when it carries no
+    // category. The source app forbids categorising a transfer between two budget
+    // accounts, so a categorised transfer leg always involves an off-budget
+    // (tracking) account — e.g. selling shares brings money into the budget as
+    // "Ready to Assign" income, and buying shares is categorised spending. Those
+    // must keep their category (and their income/activity effect), not be flattened
+    // into a categoryless transfer.
+    const isTransferPayee = /^transfer\s*:/i.test(r.payee.trim());
     let kind: RowKind = "normal";
-    if (/^transfer\s*:/i.test(r.payee.trim())) kind = "withinTransfer";
+    if (isTransferPayee && !categoryFold) kind = "withinTransfer";
     else if (groupFold === "inflow" || categoryFold === "ready to assign") kind = "income";
 
     const splitMatch = SPLIT_RE.exec(r.memo);

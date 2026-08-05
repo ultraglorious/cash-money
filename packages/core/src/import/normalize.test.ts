@@ -42,6 +42,26 @@ describe("normalizeRegister", () => {
     expect(n!.kind).toBe("withinTransfer");
   });
 
+  it("treats a categorised transfer leg as income, not a within-budget transfer", () => {
+    // Selling shares brings money into the budget from a tracking account as
+    // "Ready to Assign" — a categorised transfer that must count as income.
+    const [n] = normalizeRegister(
+      [reg({ payee: "Transfer : ETF: WORLD.DE", group: "Inflow", category: "Ready to Assign", inflow: "€5485.94", outflow: "€0.00" })],
+      OPTS,
+    );
+    expect(n!.kind).toBe("income");
+  });
+
+  it("treats a categorised transfer leg with a spending category as normal activity", () => {
+    // Buying shares moves budget money to a tracking account, categorised as
+    // spending ("Uninvested Savings") — normal activity, not a transfer.
+    const [n] = normalizeRegister(
+      [reg({ payee: "Transfer : Investment Account", group: "Savings Goals", category: "Uninvested Savings" })],
+      OPTS,
+    );
+    expect(n!.kind).toBe("normal");
+  });
+
   it("classifies income (Ready to Assign)", () => {
     const [n] = normalizeRegister([reg({ group: "Inflow", category: "Ready to Assign", inflow: "€500.00", outflow: "€0.00" })], OPTS);
     expect(n!.kind).toBe("income");

@@ -248,6 +248,27 @@ describe("per-household Ready to Assign", () => {
   });
 });
 
+describe("uncategorized inflows", () => {
+  it("counts a starting balance / uncategorized deposit as Ready to Assign", () => {
+    const chk = f.account({ id: f.tid("ACHK"), name: "Checking", type: "checking" });
+    const card = f.account({ id: f.tid("ACRD"), name: "Card", type: "creditCard" });
+    const b: LoadedBudget = {
+      budget: f.budget(),
+      accounts: [chk, card],
+      groups: [],
+      categories: [],
+      assignments: [],
+      transactions: [
+        // Uncategorized opening balance on the cash account → assignable.
+        f.txn({ id: f.tid("TSB"), accountId: chk.id, date: "2026-01-01", amount: 25000 as Cents, categoryId: undefined }),
+        // Uncategorized card opening balance (debt) → NOT income.
+        f.txn({ id: f.tid("TCB"), accountId: card.id, date: "2026-01-01", amount: -9000 as Cents, categoryId: undefined }),
+      ],
+    };
+    expect(computeProjection(b).readyToAssignOf("2026-01")).toBe(25000);
+  });
+});
+
 // --- Property-based invariants ----------------------------------------------
 
 describe("engine invariants (property-based)", () => {
