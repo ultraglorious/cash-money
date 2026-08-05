@@ -272,7 +272,10 @@ describe("uncategorized inflows", () => {
 // --- Property-based invariants ----------------------------------------------
 
 describe("engine invariants (property-based)", () => {
-  it("available(c,m) == available(c,m-1) + assigned(c,m) + activity(c,m)", () => {
+  it("available(c,m) == max(0, available(c,m-1)) + assigned(c,m) + activity(c,m) (cash overspend resets)", () => {
+    // With no credit cards, every overspend is cash overspend, so a negative
+    // envelope never carries forward — it restarts at zero (the shortfall having
+    // been pulled from Ready-to-Assign).
     fc.assert(
       fc.property(cashBudgetArb(), (b) => {
         const p = computeProjection(b);
@@ -281,7 +284,7 @@ describe("engine invariants (property-based)", () => {
           for (const m of p.months) {
             const expected = prev + p.assignedOf(c.id, m) + p.activityOf(c.id, m);
             if (p.availableOf(c.id, m) !== expected) return false;
-            prev = expected;
+            prev = Math.max(0, expected);
           }
         }
         return true;

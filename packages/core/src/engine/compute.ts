@@ -74,6 +74,7 @@ export function computeProjection(budget: LoadedBudget): Projection {
 
   // --- Gather raw sums --------------------------------------------------------
   const activity = new Map<Ulid, Series>(); // spending + payment categories
+  const cardActivityByCat = new Map<Ulid, Series>(); // of `activity`, the part spent on cards
   const income: Series = new Map();
   const cardSpend = new Map<Ulid, Series>(); // signed categorized spend on each card
   const cardTransfer = new Map<Ulid, Series>(); // signed transfer legs on each card
@@ -142,6 +143,7 @@ export function computeProjection(budget: LoadedBudget): Projection {
       bump(activity, line.categoryId, m, line.amount);
       if (cc.cardAccountIds.has(t.accountId) && !isPayment(line.categoryId)) {
         bump(cardSpend, t.accountId, m, line.amount);
+        bump(cardActivityByCat, line.categoryId, m, line.amount);
       }
     }
   }
@@ -177,15 +179,42 @@ export function computeProjection(budget: LoadedBudget): Projection {
       : monthRange(sortedMonths[0]!, sortedMonths[sortedMonths.length - 1]!);
 
   // --- Available carryover per budgetable category ---------------------------
+  // Overspend rule (matches the source budgeting app): a spending envelope that
+  // ends a month negative splits its shortfall by HOW it was overspent.
+  //   • Cash overspend — cash/checking spending beyond the envelope — cannot roll
+  //     forward: it is covered from Ready-to-Assign (recorded per household and
+  //     applied to the FOLLOWING month) and the envelope restarts at zero.
+  //   • Credit overspend — the part driven by card spending — is debt: it rolls
+  //     forward as a negative envelope (mirrored by the card's payment reserve)
+  //     and never touches Ready-to-Assign.
+  // Credit-card PAYMENT envelopes themselves are exempt; a negative there is the
+  // card debt itself and always carries.
   const budgetable = budget.categories.filter((c) => !isIncome(c.id));
   const available = new Map<Ulid, Series>();
+  const overspendByHh = new Map<string, Series>();
   for (const c of budgetable) {
     const s: Series = new Map();
+    const exempt = isPayment(c.id);
+    const hh = hhOfCategory.get(c.id) ?? GENERAL_HH;
     let prev = 0;
     for (const m of months) {
-      const val = prev + (assigned.get(c.id)?.get(m) ?? 0) + (activity.get(c.id)?.get(m) ?? 0);
+      const cardAct = cardActivityByCat.get(c.id)?.get(m) ?? 0;
+      const cashAct = (activity.get(c.id)?.get(m) ?? 0) - cardAct;
+      const afterAssign = prev + (assigned.get(c.id)?.get(m) ?? 0);
+      const afterCash = afterAssign + cashAct;
+      const val = afterCash + cardAct;
       s.set(m, val);
-      prev = val;
+      if (val < 0 && !exempt) {
+        // Cash overspend = the ADDITIONAL shortfall this month's cash spending
+        // creates, beyond any negative already carried in (that carried negative
+        // is prior credit debt, not fresh cash overspend). Everything else — old
+        // debt plus this month's uncovered card spend — carries forward.
+        const cashOverspend = Math.min(-val, Math.max(0, -afterCash) - Math.max(0, -afterAssign));
+        if (cashOverspend > 0) bump(overspendByHh, hh, m, -cashOverspend);
+        prev = val + cashOverspend; // remove cash overspend, carry the rest as debt
+      } else {
+        prev = val;
+      }
     }
     available.set(c.id, s);
   }
@@ -211,13 +240,16 @@ export function computeProjection(budget: LoadedBudget): Projection {
     const s: Series = new Map();
     let cumIn = 0;
     let cumAssigned = 0;
+    let cumOverspend = 0; // cash overspend from PRIOR months (it lags a month)
     const inc = incomeByHh.get(h);
     const xfer = crossTransferByHh.get(h);
     const asg = assignedByHh.get(h);
+    const over = overspendByHh.get(h);
     for (const m of months) {
       cumIn += (inc?.get(m) ?? 0) + (xfer?.get(m) ?? 0);
       cumAssigned += asg?.get(m) ?? 0;
-      s.set(m, cumIn - cumAssigned);
+      s.set(m, cumIn - cumAssigned + cumOverspend);
+      cumOverspend += over?.get(m) ?? 0; // this month's overspend hits next month
     }
     rtaByHh.set(h, s);
   }
