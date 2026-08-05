@@ -58,11 +58,18 @@ export function resolveTransactions(
   const transactions: Transaction[] = identified.map(({ t, naturalKey, occurrenceIndex, identity }) => {
     const household = householdOf.get(t.sourceKey) ?? t.sourceKey;
     const accountId = accounts.resolve(t.sourceKey, t.accountFold);
-    if (!accountId) unresolvedAccounts++;
+    if (!accountId) {
+      // Accounts are seeded from these same staged rows, so this is unreachable
+      // unless the pipeline itself is broken. Never fall back to a placeholder
+      // id: an invalid ULID would save fine and then fail schema validation on
+      // every subsequent load, leaving the budget permanently unloadable.
+      unresolvedAccounts++;
+      throw new Error(`Import bug: no account resolved for source row ${t.sourceRows[0]} (${t.sourceKey})`);
+    }
 
     const base: Transaction = {
       id: newId(),
-      accountId: accountId ?? ("" as Ulid),
+      accountId,
       date: t.date,
       effectiveDate: t.effectiveDate,
       payee: t.payee,
