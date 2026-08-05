@@ -1,0 +1,23 @@
+{
+  "id": "lib:budget-export-register",
+  "name": "Budget export (Register + Plan zip)",
+  "packaging": "zip-register-plan",
+  "date": { "column": "Date", "format": "dmy" },
+  "amount": { "mode": "inOut", "inflowColumn": "Inflow", "outflowColumn": "Outflow" },
+  "payeeColumn": "Payee",
+  "memoColumn": "Memo",
+  "accountColumn": "Account",
+  "category": { "mode": "columns", "groupColumn": "Category Group", "categoryColumn": "Category" },
+  "clearedColumn": "Cleared",
+  "clearedValues": { "cleared": "cleared", "reconciled": "reconciled" },
+  "flagColumn": "Flag",
+  "flagValues": { "blue": "blue", "green": "green", "purple": "purple", "red": "red", "yellow": "yellow" },
+  "transfer": { "mode": "payeePattern", "pattern": "^transfer\\s*:\\s*(.+)$", "onlyWhenUncategorized": true },
+  "splitMemoPattern": "split\\s*\\((\\d+)\\/(\\d+)\\)",
+  "semantics": {
+    "incomeGroup": "inflow",
+    "incomeCategory": "ready to assign",
+    "hiddenGroup": "hidden categories",
+    "creditCardPaymentsGroup": "credit card payments"
+  }
+}
