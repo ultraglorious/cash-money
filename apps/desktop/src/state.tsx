@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import { Center, Loader, Stack, Text } from "@mantine/core";
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { Alert, Center, Loader, Stack, Text } from "@mantine/core";
 import {
   BudgetRepository,
   computeProjection,
@@ -91,6 +91,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const hydratedRef = useRef(false);
   const [month, setMonth] = useState<MonthKey>("");
   const [view, setView] = useState<View>({ kind: "plan" });
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Save lifecycle. Saves are many sequential file writes, so they must never
+  // overlap (interleaved writes could leave disk with a mix of two snapshots).
+  // The latest unsaved budget sits in pendingRef; every actual save is chained
+  // onto saveChainRef so at most one runs at a time, always the newest snapshot.
+  const pendingRef = useRef<LoadedBudget | null>(null);
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushPending = useCallback((): Promise<void> => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    const repo = repoRef.current;
+    const snapshot = pendingRef.current;
+    pendingRef.current = null;
+    if (repo && snapshot) {
+      saveChainRef.current = saveChainRef.current
+        .then(() => saveWholeBudget(repo, snapshot))
+        .catch((e) => console.error("Failed to save budget:", e));
+    }
+    return saveChainRef.current;
+  }, []);
 
   // Bootstrap: load from disk in Tauri, else use demo data in a plain browser.
   useEffect(() => {
@@ -110,8 +135,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           if (!cancelled) dispatch({ type: "set", budget: loaded });
         } catch (e) {
+          // Never fall back to a fresh empty budget here: the first edit would
+          // register it as active and the real data — still on disk — would be
+          // orphaned. Surface the problem instead.
           console.error("Failed to load budget:", e);
-          if (!cancelled) dispatch({ type: "set", budget: newEmptyBudget() });
+          if (!cancelled) setLoadError(String(e));
         }
       } else if (!cancelled) {
         dispatch({ type: "set", budget: demoBudget() });
@@ -122,24 +150,62 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Persist changes (debounced). Skips the initial hydration; no-op in browser.
+  // Persist changes (debounced, serialized). Skips the initial hydration.
   useEffect(() => {
     if (!budget || !repoRef.current) return;
     if (!hydratedRef.current) {
       hydratedRef.current = true;
       return;
     }
-    const repo = repoRef.current;
-    const snapshot = budget;
-    const t = setTimeout(() => {
-      saveWholeBudget(repo, snapshot).catch((e) => console.error("Failed to save budget:", e));
-    }, 500);
-    return () => clearTimeout(t);
-  }, [budget]);
+    pendingRef.current = budget;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => void flushPending(), 500);
+  }, [budget, flushPending]);
+
+  // Never lose the debounce window's edits: flush before the window closes,
+  // and opportunistically when it goes to the background.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const win = getCurrentWindow();
+      unlisten = await win.onCloseRequested(async (event) => {
+        event.preventDefault();
+        await flushPending();
+        await win.destroy();
+      });
+    })();
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") void flushPending();
+    };
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      unlisten?.();
+      document.removeEventListener("visibilitychange", onHidden);
+    };
+  }, [flushPending]);
 
   const projection = useMemo(() => (budget ? computeProjection(budget) : null), [budget]);
   const accById = useMemo(() => new Map((budget?.accounts ?? []).map((a) => [a.id, a.name])), [budget]);
   const catById = useMemo(() => new Map((budget?.categories ?? []).map((c) => [c.id, c.name])), [budget]);
+
+  if (loadError) {
+    return (
+      <Center h="100vh" p="xl">
+        <Alert color="red" title="Couldn't read your budget" maw={560}>
+          <Text size="sm">
+            Your data is still on disk, but it couldn't be loaded, so editing is disabled to
+            avoid overwriting anything. Fix the cause (or restore the data folder from a backup)
+            and reopen the app.
+          </Text>
+          <Text size="xs" c="dimmed" mt="sm" style={{ fontFamily: "monospace" }}>
+            {loadError}
+          </Text>
+        </Alert>
+      </Center>
+    );
+  }
 
   if (!budget || !projection) {
     return (
