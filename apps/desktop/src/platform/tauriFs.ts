@@ -34,3 +34,8 @@ export interface CsvMember {
 export function readZipCsvs(zipPath: string): Promise<CsvMember[]> {
   return invoke<CsvMember[]>("read_zip_csvs", { zipPath });
 }
+
+/** Read a text file at an absolute path (e.g. a bank statement CSV). */
+export function readTextAbs(path: string): Promise<string> {
+  return invoke<string>("read_text_abs", { path });
+}

@@ -1,4 +1,4 @@
-import { ActionIcon, Badge, Group, NavLink, ScrollArea, Stack, Text, ThemeIcon, Tooltip } from "@mantine/core";
+import { ActionIcon, Badge, Button, Group, Menu, NavLink, ScrollArea, Stack, Text, ThemeIcon, Tooltip } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
   DndContext,
@@ -26,6 +26,7 @@ import { money } from "../format";
 import { amountColor, householdColor } from "../theme";
 import { AddAccountModal } from "./AddAccountModal";
 import { ImportWizard } from "../features/import/ImportWizard";
+import { BankImportWizard } from "../features/import/BankImportWizard";
 import { Wordmark } from "./Wordmark";
 
 function accountIcon(a: Account) {
@@ -38,6 +39,7 @@ export function Sidebar() {
   const { budget, projection, currency, view, setView, setAccountOrder } = useApp();
   const [addOpen, addModal] = useDisclosure(false);
   const [importOpen, importModal] = useDisclosure(false);
+  const [bankOpen, bankModal] = useDisclosure(false);
   const balances = projection.accountBalances();
   const households = projection.households;
   const balOf = (id: Ulid) => balances.get(id) ?? 0;
@@ -72,7 +74,6 @@ export function Sidebar() {
       <ScrollArea style={{ flex: 1 }} px="xs">
         <NavLink active={view.kind === "plan"} label="Plan" leftSection={<IconTargetArrow size={18} />} onClick={() => setView({ kind: "plan" })} variant="filled" />
         <NavLink active={view.kind === "analytics"} label="Analytics" leftSection={<IconChartHistogram size={18} />} onClick={() => setView({ kind: "analytics" })} variant="filled" />
-        <NavLink label="Import" leftSection={<IconFileImport size={18} />} onClick={importModal.open} variant="filled" />
 
         <Group justify="space-between" px="sm" mt="md" mb={4}>
           <Text size="xs" c="dimmed" fw={700} tt="uppercase">Accounts</Text>
@@ -96,8 +97,24 @@ export function Sidebar() {
         </DndContext>
       </ScrollArea>
 
+      <Group px="sm" py="xs" style={{ borderTop: "1px solid var(--mantine-color-default-border)" }}>
+        <Menu position="top-start" withinPortal shadow="md">
+          <Menu.Target>
+            <Button variant="subtle" color="gray" size="xs" fullWidth justify="flex-start" leftSection={<IconFileImport size={15} />}>
+              Import…
+            </Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Label>Import transactions</Menu.Label>
+            <Menu.Item onClick={importModal.open}>Budget export (.zip)…</Menu.Item>
+            <Menu.Item onClick={bankModal.open}>Bank statement (CSV)…</Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
+      </Group>
+
       <AddAccountModal opened={addOpen} onClose={addModal.close} />
       <ImportWizard opened={importOpen} onClose={importModal.close} />
+      <BankImportWizard opened={bankOpen} onClose={bankModal.close} />
     </Stack>
   );
 }

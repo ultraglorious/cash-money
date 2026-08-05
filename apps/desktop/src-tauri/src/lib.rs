@@ -20,6 +20,7 @@ pub fn run() {
       commands::list_dir,
       commands::remove_file,
       commands::read_zip_csvs,
+      commands::read_text_abs,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

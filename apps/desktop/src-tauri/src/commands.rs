@@ -65,6 +65,12 @@ pub fn remove_file(app: AppHandle, path: String) -> Result<(), String> {
     }
 }
 
+/// Read a text file at an absolute path (from the file picker, e.g. a bank CSV).
+#[tauri::command]
+pub fn read_text_abs(path: String) -> Result<String, String> {
+    fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CsvMember {
