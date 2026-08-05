@@ -27,9 +27,12 @@ accounting and its own Ready-to-Assign.
 - **Transactions** — a register per account (and an all-accounts view): add,
   edit, split across categories, mark cleared, approve scheduled entries, search
   and sort.
-- **Import/merge** — parse exported CSVs, merge multiple budgets into one, dedupe
-  transfers, and re-import safely (idempotent — importing the same file twice
-  changes nothing).
+- **Import/merge** — format-driven CSV import: budget exports merge into one
+  budget (multiple households, dedupe transfers), bank statements import into an
+  existing account, and any CSV shape can be described by a column mapping —
+  known shapes ship as JSON files in a contributable format library, and your
+  own mappings can be saved for reuse. Re-import is safe (idempotent — importing
+  the same file twice changes nothing).
 - **Analytics** — a placeholder for now.
 
 The budgeting logic is done and thoroughly tested, and the desktop app loads and

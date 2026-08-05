@@ -100,36 +100,46 @@ side — which is what makes each household's number come out right.
 their balances are shown but excluded from the budget math. Unapproved
 (scheduled) transactions are excluded until approved.
 
-## The import/merge pipeline (`packages/core/src/import/`)
+## The import pipeline (`packages/core/src/import/`)
 
-Turns exported CSVs into a merged budget. Pure, ordered stages, each in its own
-file so it can be tested in isolation:
+Imports are **format-driven**: nothing about any particular app's CSV shape is
+hardcoded. A `RegisterFormat` (in `format.ts`) is a plain-JSON description of
+one CSV shape — which columns hold what, the date layout, signed vs in/out
+amounts, cleared/flag vocabularies, how transfers are recognized, and which
+group names carry special meaning (income, hidden, card payments). Everything
+downstream consumes a format-neutral staged representation, never a vocabulary.
 
-1. **`csv.ts`** — parse the Register + Plan CSVs with a real CSV parser (handles a
-   byte-order mark and commas inside quoted memos).
-2. **`normalize.ts`** — typed rows: signed integer amounts, ISO dates, trimmed +
-   case-folded names for matching, and a `kind` (normal / income / transfer).
-3. **`transactions.ts`** — reconstruct split transactions from their child rows.
-4. **`transfers.ts`** — dedupe within-budget transfers (two mirrored `Transfer :`
-   rows → one linked pair). Money moving *between* budgets is deliberately left
-   exactly as each side recorded it — a categorized expense on the sender, income
-   on the receiver. Collapsing the two sides into one transfer ("stitching") was
-   tried and removed: both budgets end up claiming the same money and
-   Ready-to-Assign collapses to a large negative.
-5. **`categories.ts`** — build one category tree, keeping each household's
-   sections separate, and link each credit-card payment category to its card.
-6. **`identity.ts`** — give every row a deterministic content fingerprint plus an
-   "occurrence index" so genuine duplicates are distinguishable. This is what
-   makes re-import **idempotent**.
-7. **`plan.ts`** — import only the `Assigned` amounts; derive activity/available
-   from transactions (importing them would drift after the merge). The export's
-   own activity/available become a correctness *oracle* used in testing.
-8. **`reconcile.ts`** — diff a fresh import against existing transactions: added /
-   changed / unchanged / deleted, preserving in-app edits. (Currently used by the
-   validation scripts and tests; the app's import wizard still *replaces* the
-   budget on commit — wiring reconcile into that path is a planned follow-up.)
-9. **`pipeline.ts`** — runs all stages and produces a staging budget + a report
-   (counts, transfer pairs, unresolved items, a net-across-accounts checksum).
+**The format library** lives in `import/formats/` as one JSON file per known
+shape, validated against a zod schema by a guardrail test. To add a format:
+drop a `<slug>.json` (id `lib:<slug>`) in that directory, add one line to
+`formats/index.ts`, and the tests pick it up. User-created mappings are saved
+by the app to `formats.json` in the data folder and appear in the wizard's
+picker next to the library ones.
+
+There are two entry points sharing the same stages:
+
+**Snapshot import (`stageImport`)** — one or more full budget exports, merged
+into a fresh staging budget. Per source (each with its own format + as-of
+date): `register.ts` maps rows via the descriptor; `planCsv.ts` reads the
+optional Assigned CSV; `transactions.ts` reconstructs splits; then across all
+sources: `transfers.ts` pairs within-budget transfer legs (cross-budget
+movements stay exactly as recorded — "stitching" them was tried and removed
+because both budgets end up claiming the same money), `accounts.ts` and
+`categories.ts` build the unified tree, `identity.ts` fingerprints every row
+(content identity + occurrence index — what makes re-import **idempotent**),
+`plan.ts` imports Assigned amounts (deriving activity/available; the export's
+own numbers become a test oracle), and `resolve.ts` produces final records.
+
+**Statement import (`stageStatement`)** — a single-account CSV (a bank's own
+export) merged into the EXISTING budget. Rows carry the same content identity,
+under a stable per-account source key, so re-importing the same or an
+overlapping statement adds nothing. Statement merge never deletes and never
+overwrites — a row you categorized in-app stays categorized when the same row
+arrives again.
+
+`reconcile.ts` also holds the snapshot-side diff (added/changed/deleted,
+preserving in-app edits) — currently used by the validation scripts; wiring it
+into the wizard's commit (instead of replace) is a planned follow-up.
 
 Concrete names (source labels, household names) are supplied as **config at
 runtime**, never hardcoded — so no personal data lives in the source.
