@@ -43,7 +43,7 @@ export interface CategoriesResult {
  * Builds the unified category tree. Same-named groups from different households
  * are kept separate (tagged by household); "Hidden Categories" becomes a hidden
  * flag; the income group hosts the inflow bucket; and each credit-card payment
- * category is linked to its card account (setting the account's paymentCategoryId).
+ * category is linked to its card account via the category's linkedAccountId.
  */
 export function buildCategories(
   staged: readonly StagedTxn[],
@@ -163,7 +163,6 @@ export function buildCategories(
     if (c.linkedAccountId) {
       const acc = accountById.get(c.linkedAccountId);
       if (acc) {
-        acc.paymentCategoryId = c.id;
         acc.type = "creditCard";
         acc.onBudget = true;
       }

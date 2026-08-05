@@ -101,7 +101,7 @@ describe("stageImport end-to-end merge", () => {
     expect(split!.splits).toHaveLength(2);
     expect(report.creditCardLinks).toBe(1);
     const card = staging.accounts.find((a) => a.name === "Card")!;
-    expect(card.paymentCategoryId).toBeTruthy();
+    expect(staging.categories.some((c) => c.linkedAccountId === card.id)).toBe(true);
   });
 
   it("conserves money and produces a coherent budget the engine can compute", () => {
