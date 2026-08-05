@@ -3,6 +3,7 @@ import { Alert, Center, Loader, Stack, Text } from "@mantine/core";
 import {
   BudgetRepository,
   computeProjection,
+  newId,
   ops,
   type AccountType,
   type Cents,
@@ -10,6 +11,7 @@ import {
   type LoadedBudget,
   type MonthKey,
   type Projection,
+  type SavedFormat,
   type SplitLine,
   type Transaction,
   type Ulid,
@@ -83,6 +85,15 @@ interface AppState {
   deleteTransaction: (id: Ulid) => void;
   approveTransaction: (id: Ulid) => void;
   setSplits: (id: Ulid, splits: SplitLine[] | undefined, categoryIdWhenUnsplit?: Ulid) => void;
+
+  /** User-saved register formats (empty / no-op in the browser preview). */
+  loadFormats: () => Promise<SavedFormat[]>;
+  saveFormats: (formats: SavedFormat[]) => Promise<void>;
+  /**
+   * The stable statement sourceKey for an account — minted once, persisted,
+   * and reused so re-imported statements identity-match earlier ones.
+   */
+  statementSourceKey: (accountId: Ulid, formatId: string) => Promise<string>;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -268,6 +279,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     deleteTransaction: (id) => apply((b) => ops.deleteTransaction(b, id)),
     approveTransaction: (id) => apply((b) => ops.approveTransaction(b, id)),
     setSplits: (id, splits, categoryIdWhenUnsplit) => apply((b) => ops.setSplits(b, id, splits, categoryIdWhenUnsplit)),
+
+    loadFormats: () => repoRef.current?.loadFormats() ?? Promise.resolve([]),
+    saveFormats: (formats) => repoRef.current?.saveFormats(formats) ?? Promise.resolve(),
+    statementSourceKey: async (accountId, formatId) => {
+      const repo = repoRef.current;
+      // Browser preview: deterministic per-account key, nothing persisted.
+      if (!repo) return `stmt:${accountId}`;
+      const budgetId = budget.budget.id;
+      const entries = await repo.loadImportSources(budgetId);
+      const existing = entries.find((e) => e.accountId === accountId);
+      if (existing) return existing.sourceKey;
+      const sourceKey = newId();
+      await repo.saveImportSources(budgetId, [...entries, { accountId, formatId, sourceKey }]);
+      return sourceKey;
+    },
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
