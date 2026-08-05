@@ -84,6 +84,7 @@ interface AppState {
   updateTransaction: (id: Ulid, patch: Partial<Omit<Transaction, "id">>) => void;
   deleteTransaction: (id: Ulid) => void;
   approveTransaction: (id: Ulid) => void;
+  approveTransactions: (ids: Ulid[]) => void;
   setSplits: (id: Ulid, splits: SplitLine[] | undefined, categoryIdWhenUnsplit?: Ulid) => void;
 
   /** User-saved register formats (empty / no-op in the browser preview). */
@@ -278,6 +279,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     updateTransaction: (id, patch) => apply((b) => ops.updateTransaction(b, id, patch)),
     deleteTransaction: (id) => apply((b) => ops.deleteTransaction(b, id)),
     approveTransaction: (id) => apply((b) => ops.approveTransaction(b, id)),
+    approveTransactions: (ids) => apply((b) => ops.approveTransactions(b, ids)),
     setSplits: (id, splits, categoryIdWhenUnsplit) => apply((b) => ops.setSplits(b, id, splits, categoryIdWhenUnsplit)),
 
     loadFormats: () => repoRef.current?.loadFormats() ?? Promise.resolve([]),
