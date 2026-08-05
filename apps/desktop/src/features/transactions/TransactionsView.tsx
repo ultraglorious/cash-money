@@ -1,11 +1,13 @@
 import { useMemo, useRef, useState } from "react";
-import { ActionIcon, Badge, Box, Button, Group, Menu, Select, Text, TextInput, Title } from "@mantine/core";
+import { ActionIcon, Badge, Box, Button, Collapse, Group, Menu, Select, Text, TextInput, Title, Tooltip } from "@mantine/core";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   IconArrowsSplit,
+  IconCheck,
   IconChecks,
   IconChevronDown,
   IconChevronUp,
+  IconClock,
   IconDots,
   IconPlus,
   IconSearch,
@@ -28,6 +30,7 @@ export function TransactionsView() {
   const [editingId, setEditingId] = useState<Ulid | null>(null);
   const [splitting, setSplitting] = useState<Transaction | null>(null);
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" } | null>(null);
+  const [schedOpen, setSchedOpen] = useState(true);
 
   const single = view.kind === "account" ? (view.accountId as Ulid) : null;
   const activeAccount = single ?? (account as Ulid | null);
@@ -90,8 +93,14 @@ export function TransactionsView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [budget, query, activeAccount, sort]);
 
+  // Scheduled (unapproved) transactions are pending: they don't hit the budget
+  // until approved. Surface them separately, soonest first, above the register.
+  const scheduled = useMemo(() => rows.filter((t) => !t.approved).sort((a, b) => (a.date < b.date ? -1 : 1)), [rows]);
+  const approved = useMemo(() => rows.filter((t) => t.approved), [rows]);
+  const scheduledTotal = scheduled.reduce((s, t) => s + t.amount, 0);
+
   const parentRef = useRef<HTMLDivElement>(null);
-  const virt = useVirtualizer({ count: rows.length, getScrollElement: () => parentRef.current, estimateSize: () => 44, overscan: 14 });
+  const virt = useVirtualizer({ count: approved.length, getScrollElement: () => parentRef.current, estimateSize: () => 44, overscan: 14 });
 
   const title = single ? accountName(single) : "All Accounts";
   const balance = single ? projection.accountBalances().get(single) ?? 0 : null;
@@ -143,7 +152,52 @@ export function TransactionsView() {
         {!single && <Select placeholder="All accounts" clearable value={account} onChange={setAccount} data={accountData} w={220} />}
       </Group>
 
-      <Text size="xs" c="dimmed" mb={4}>{rows.length} transaction{rows.length === 1 ? "" : "s"} · double-click a row to edit</Text>
+      {scheduled.length > 0 && (
+        <Box mb="sm" style={{ border: "1px solid var(--mantine-color-orange-4)", borderRadius: 8, overflow: "hidden" }}>
+          <Group justify="space-between" px="md" py={6} style={{ background: "var(--mantine-color-orange-light)" }}>
+            <Group gap="xs" style={{ cursor: "pointer" }} onClick={() => setSchedOpen((o) => !o)}>
+              <IconClock size={16} />
+              <Text size="sm" fw={700}>Scheduled</Text>
+              <Badge size="sm" color="orange" variant="filled">{scheduled.length}</Badge>
+              <Text size="sm" c={amountColor(scheduledTotal)} fw={600}>{money(scheduledTotal, currency)}</Text>
+              <Text size="xs" c="dimmed">— not yet counted in your budget</Text>
+            </Group>
+            <Button size="xs" variant="light" color="orange" leftSection={<IconChecks size={14} />} onClick={() => scheduled.forEach((t) => approveTransaction(t.id))}>
+              Approve all
+            </Button>
+          </Group>
+          <Collapse in={schedOpen}>
+            {scheduled.map((t) => (
+              <Box
+                key={t.id}
+                style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px", borderTop: "1px solid var(--mantine-color-orange-2)", background: "light-dark(var(--mantine-color-orange-0), rgba(255,146,43,0.06))" }}
+              >
+                <Text size="sm">{t.date}</Text>
+                {!single && <Text size="sm" lineClamp={1}>{accountName(t.accountId)}</Text>}
+                <Text size="sm" lineClamp={1}>{t.payee}</Text>
+                <Text size="sm" lineClamp={1} c={t.transfer ? "blue" : t.splits ? "grape" : undefined}>{categoryLabel(t)}</Text>
+                <Text size="sm" c="dimmed" lineClamp={1}>{t.memo}</Text>
+                <Text size="sm" fw={500} ta="right" c={amountColor(t.amount)}>{money(t.amount, currency)}</Text>
+                <Badge size="xs" color="orange" variant="light">scheduled</Badge>
+                <Group gap={2} wrap="nowrap" justify="flex-end">
+                  <Tooltip label="Approve — count it in the budget" withArrow>
+                    <ActionIcon variant="light" color="teal" size="sm" onClick={() => approveTransaction(t.id)} aria-label="Approve">
+                      <IconCheck size={14} />
+                    </ActionIcon>
+                  </Tooltip>
+                  <ActionIcon variant="subtle" color="gray" size="sm" onClick={() => deleteTransaction(t.id)} aria-label="Delete">
+                    <IconTrash size={14} />
+                  </ActionIcon>
+                </Group>
+              </Box>
+            ))}
+          </Collapse>
+        </Box>
+      )}
+
+      <Text size="xs" c="dimmed" mb={4}>
+        {approved.length} transaction{approved.length === 1 ? "" : "s"} · double-click a row to edit
+      </Text>
 
       {/* Column header */}
       <Box style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, padding: "6px 10px", borderBottom: "1px solid var(--mantine-color-default-border)", fontWeight: 600, fontSize: 13 }}>
@@ -164,7 +218,7 @@ export function TransactionsView() {
       <div ref={parentRef} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         <div style={{ height: virt.getTotalSize(), position: "relative" }}>
           {virt.getVirtualItems().map((vi) => {
-            const t = rows[vi.index]!;
+            const t = approved[vi.index]!;
             const editing = editingId === t.id && !t.splits && !t.transfer;
             return (
               <div key={t.id} ref={virt.measureElement} data-index={vi.index} style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vi.start}px)` }}>
@@ -202,7 +256,11 @@ export function TransactionsView() {
             );
           })}
         </div>
-        {rows.length === 0 && !adding && <Text size="sm" c="dimmed" ta="center" py="xl">No transactions.</Text>}
+        {approved.length === 0 && !adding && (
+          <Text size="sm" c="dimmed" ta="center" py="xl">
+            {scheduled.length > 0 ? "No approved transactions yet — approve the scheduled ones above." : "No transactions."}
+          </Text>
+        )}
       </div>
 
       <SplitEditorModal
