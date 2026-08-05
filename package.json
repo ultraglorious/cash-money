@@ -1,0 +1,18 @@
+{
+  "name": "cash-money",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A local, cross-platform envelope budgeting app.",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "test:watch": "npm run test:watch --workspace @cash-money/core",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present"
+  }
+}
