@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { Alert, Center, Loader, Stack, Text } from "@mantine/core";
 import {
   BudgetRepository,
@@ -43,7 +43,8 @@ async function saveWholeBudget(repo: BudgetRepository, b: LoadedBudget): Promise
   await repo.registerBudget({ id: b.budget.id, name: b.budget.name });
 }
 
-interface AppState {
+/** Everything that changes as the user works: the budget, its projection, navigation. */
+interface BudgetState {
   budget: LoadedBudget;
   projection: Projection;
   currency: CurrencyConfig;
@@ -52,10 +53,16 @@ interface AppState {
   setMonth: (m: MonthKey) => void;
   view: View;
   setView: (v: View) => void;
-  persistent: boolean;
   accountName: (id: Ulid) => string;
   categoryName: (id: Ulid | undefined) => string;
+}
 
+/**
+ * Every mutation, as a stable object (identity never changes across renders) —
+ * a component that only dispatches can subscribe via useActions() and be
+ * memoized without re-rendering on data changes.
+ */
+interface Actions {
   replaceBudget: (b: LoadedBudget) => void;
   addAccount: (args: { name: string; type: AccountType; onBudget?: boolean; household?: string }) => void;
   setAccountOrder: (orderedIds: Ulid[]) => void;
@@ -77,7 +84,6 @@ interface AppState {
   setAssigned: (month: MonthKey, categoryId: Ulid, amount: Cents) => void;
   moveMoney: (month: MonthKey, from: Ulid, to: Ulid, amount: Cents) => void;
   coverShortfall: (month: MonthKey, from: Ulid, to: Ulid) => void;
-  getAssigned: (month: MonthKey, categoryId: Ulid) => Cents;
   addTransaction: (tx: Transaction) => void;
   addTransactions: (txs: Transaction[]) => void;
   setTransactions: (txs: Transaction[]) => void;
@@ -97,7 +103,10 @@ interface AppState {
   statementSourceKey: (accountId: Ulid, formatId: string) => Promise<string>;
 }
 
-const Ctx = createContext<AppState | null>(null);
+export type AppState = BudgetState & Actions;
+
+const DataCtx = createContext<BudgetState | null>(null);
+const ActionsCtx = createContext<Actions | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [budget, dispatch] = useReducer(reducer, null);
@@ -107,6 +116,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [view, setView] = useState<View>({ kind: "plan" });
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // Mirror of the current budget for the stable action closures below.
+  const budgetRef = useRef<LoadedBudget | null>(null);
+  budgetRef.current = budget;
+
   // Save lifecycle. Saves are many sequential file writes, so they must never
   // overlap (interleaved writes could leave disk with a mix of two snapshots).
   // The latest unsaved budget sits in pendingRef; every actual save is chained
@@ -115,7 +128,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const flushPending = useCallback((): Promise<void> => {
+  const flushPendingRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  flushPendingRef.current = (): Promise<void> => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -129,7 +143,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         .catch((e) => console.error("Failed to save budget:", e));
     }
     return saveChainRef.current;
-  }, []);
+  };
 
   // Bootstrap: load from disk in Tauri, else use demo data in a plain browser.
   useEffect(() => {
@@ -173,8 +187,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     pendingRef.current = budget;
     if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => void flushPending(), 500);
-  }, [budget, flushPending]);
+    timerRef.current = setTimeout(() => void flushPendingRef.current(), 500);
+  }, [budget]);
 
   // Never lose the debounce window's edits: flush before the window closes,
   // and opportunistically when it goes to the background.
@@ -186,23 +200,94 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const win = getCurrentWindow();
       unlisten = await win.onCloseRequested(async (event) => {
         event.preventDefault();
-        await flushPending();
+        await flushPendingRef.current();
         await win.destroy();
       });
     })();
     const onHidden = () => {
-      if (document.visibilityState === "hidden") void flushPending();
+      if (document.visibilityState === "hidden") void flushPendingRef.current();
     };
     document.addEventListener("visibilitychange", onHidden);
     return () => {
       unlisten?.();
       document.removeEventListener("visibilitychange", onHidden);
     };
-  }, [flushPending]);
+  }, []);
 
   const projection = useMemo(() => (budget ? computeProjection(budget) : null), [budget]);
   const accById = useMemo(() => new Map((budget?.accounts ?? []).map((a) => [a.id, a.name])), [budget]);
   const catById = useMemo(() => new Map((budget?.categories ?? []).map((c) => [c.id, c.name])), [budget]);
+
+  // The actions object is created ONCE — everything it needs flows through
+  // dispatch and refs, so its identity is stable for the app's lifetime.
+  const actions = useMemo<Actions>(() => {
+    const apply = (fn: (b: LoadedBudget) => LoadedBudget) => dispatch({ type: "apply", fn });
+    return {
+      replaceBudget: (b) => dispatch({ type: "set", budget: b }),
+      addAccount: (args) => apply((b) => ops.addAccount(b, args)),
+      setAccountOrder: (orderedIds) => apply((b) => ops.setAccountOrder(b, orderedIds)),
+      setAccountClosed: (id, closed) => apply((b) => ops.setAccountClosed(b, id, closed)),
+      renameAccount: (id, name) => apply((b) => ops.renameAccount(b, id, name)),
+      reorderCategory: (categoryId, toGroupId, targetIndex) => apply((b) => ops.reorderCategory(b, categoryId, toGroupId, targetIndex)),
+      setCategoryOrder: (groupId, orderedIds) => apply((b) => ops.setCategoryOrder(b, groupId, orderedIds)),
+      setGroupOrder: (orderedGroupIds) => apply((b) => ops.setGroupOrder(b, orderedGroupIds)),
+      setHouseholdOrder: (orderedHouseholds) => apply((b) => ops.setHouseholdOrder(b, orderedHouseholds)),
+      addGroup: (name, household) => apply((b) => ops.addGroup(b, { name, household })),
+      renameGroup: (id, name) => apply((b) => ops.renameGroup(b, id, name)),
+      setGroupHidden: (id, hidden) => apply((b) => ops.setGroupHidden(b, id, hidden)),
+      deleteGroup: (id) => apply((b) => ops.deleteGroup(b, id)),
+      addCategory: (groupId, name) => apply((b) => ops.addCategory(b, { groupId, name })),
+      renameCategory: (id, name) => apply((b) => ops.renameCategory(b, id, name)),
+      moveCategory: (id, toGroupId) => apply((b) => ops.moveCategory(b, id, toGroupId)),
+      setCategoryHidden: (id, hidden) => apply((b) => ops.setCategoryHidden(b, id, hidden)),
+      deleteCategory: (id) => apply((b) => ops.deleteCategory(b, id)),
+      setAssigned: (m, categoryId, amount) => apply((b) => ops.setAssigned(b, m, categoryId, amount)),
+      moveMoney: (m, from, to, amount) => apply((b) => ops.moveMoney(b, m, from, to, amount)),
+      coverShortfall: (m, from, to) => apply((b) => ops.coverShortfall(b, m, from, to)),
+      addTransaction: (tx) => apply((b) => ops.addTransaction(b, tx)),
+      addTransactions: (txs) => apply((b) => ops.addTransactions(b, txs)),
+      setTransactions: (txs) => apply((b) => ops.setTransactions(b, txs)),
+      updateTransaction: (id, patch) => apply((b) => ops.updateTransaction(b, id, patch)),
+      deleteTransaction: (id) => apply((b) => ops.deleteTransaction(b, id)),
+      approveTransaction: (id) => apply((b) => ops.approveTransaction(b, id)),
+      approveTransactions: (ids) => apply((b) => ops.approveTransactions(b, ids)),
+      setSplits: (id, splits, categoryIdWhenUnsplit) => apply((b) => ops.setSplits(b, id, splits, categoryIdWhenUnsplit)),
+
+      loadFormats: () => repoRef.current?.loadFormats() ?? Promise.resolve([]),
+      saveFormats: (formats) => repoRef.current?.saveFormats(formats) ?? Promise.resolve(),
+      statementSourceKey: async (accountId, formatId) => {
+        const repo = repoRef.current;
+        const budgetId = budgetRef.current?.budget.id;
+        // Browser preview: deterministic per-account key, nothing persisted.
+        if (!repo || !budgetId) return `stmt:${accountId}`;
+        const entries = await repo.loadImportSources(budgetId);
+        const existing = entries.find((e) => e.accountId === accountId);
+        if (existing) return existing.sourceKey;
+        const sourceKey = newId();
+        await repo.saveImportSources(budgetId, [...entries, { accountId, formatId, sourceKey }]);
+        return sourceKey;
+      },
+    };
+  }, []);
+
+  const months = projection?.months ?? [];
+  const activeMonth = months.includes(month) ? month : months[months.length - 1] ?? month;
+
+  const data = useMemo<BudgetState | null>(() => {
+    if (!budget || !projection) return null;
+    return {
+      budget,
+      projection,
+      currency: budget.budget.currency,
+      months: projection.months,
+      month: activeMonth,
+      setMonth,
+      view,
+      setView,
+      accountName: (id) => accById.get(id) ?? "—",
+      categoryName: (id) => (id ? catById.get(id) ?? "—" : ""),
+    };
+  }, [budget, projection, activeMonth, view, accById, catById]);
 
   if (loadError) {
     return (
@@ -221,7 +306,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!budget || !projection) {
+  if (!data) {
     return (
       <Center h="100vh">
         <Stack align="center" gap="xs">
@@ -234,75 +319,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   }
 
-  const apply = (fn: (b: LoadedBudget) => LoadedBudget) => dispatch({ type: "apply", fn });
-  const months = projection.months;
-  const activeMonth = months.includes(month) ? month : months[months.length - 1] ?? month;
-
-  const value: AppState = {
-    budget,
-    projection,
-    currency: budget.budget.currency,
-    months,
-    month: activeMonth,
-    setMonth,
-    view,
-    setView,
-    persistent: repoRef.current !== null,
-    accountName: (id) => accById.get(id) ?? "—",
-    categoryName: (id) => (id ? catById.get(id) ?? "—" : ""),
-
-    replaceBudget: (b) => dispatch({ type: "set", budget: b }),
-    addAccount: (args) => apply((b) => ops.addAccount(b, args)),
-    setAccountOrder: (orderedIds) => apply((b) => ops.setAccountOrder(b, orderedIds)),
-    setAccountClosed: (id, closed) => apply((b) => ops.setAccountClosed(b, id, closed)),
-    renameAccount: (id, name) => apply((b) => ops.renameAccount(b, id, name)),
-    reorderCategory: (categoryId, toGroupId, targetIndex) => apply((b) => ops.reorderCategory(b, categoryId, toGroupId, targetIndex)),
-    setCategoryOrder: (groupId, orderedIds) => apply((b) => ops.setCategoryOrder(b, groupId, orderedIds)),
-    setGroupOrder: (orderedGroupIds) => apply((b) => ops.setGroupOrder(b, orderedGroupIds)),
-    setHouseholdOrder: (orderedHouseholds) => apply((b) => ops.setHouseholdOrder(b, orderedHouseholds)),
-    addGroup: (name, household) => apply((b) => ops.addGroup(b, { name, household })),
-    renameGroup: (id, name) => apply((b) => ops.renameGroup(b, id, name)),
-    setGroupHidden: (id, hidden) => apply((b) => ops.setGroupHidden(b, id, hidden)),
-    deleteGroup: (id) => apply((b) => ops.deleteGroup(b, id)),
-    addCategory: (groupId, name) => apply((b) => ops.addCategory(b, { groupId, name })),
-    renameCategory: (id, name) => apply((b) => ops.renameCategory(b, id, name)),
-    moveCategory: (id, toGroupId) => apply((b) => ops.moveCategory(b, id, toGroupId)),
-    setCategoryHidden: (id, hidden) => apply((b) => ops.setCategoryHidden(b, id, hidden)),
-    deleteCategory: (id) => apply((b) => ops.deleteCategory(b, id)),
-    setAssigned: (m, categoryId, amount) => apply((b) => ops.setAssigned(b, m, categoryId, amount)),
-    moveMoney: (m, from, to, amount) => apply((b) => ops.moveMoney(b, m, from, to, amount)),
-    coverShortfall: (m, from, to) => apply((b) => ops.coverShortfall(b, m, from, to)),
-    getAssigned: (m, categoryId) => ops.getAssigned(budget, m, categoryId),
-    addTransaction: (tx) => apply((b) => ops.addTransaction(b, tx)),
-    addTransactions: (txs) => apply((b) => ops.addTransactions(b, txs)),
-    setTransactions: (txs) => apply((b) => ops.setTransactions(b, txs)),
-    updateTransaction: (id, patch) => apply((b) => ops.updateTransaction(b, id, patch)),
-    deleteTransaction: (id) => apply((b) => ops.deleteTransaction(b, id)),
-    approveTransaction: (id) => apply((b) => ops.approveTransaction(b, id)),
-    approveTransactions: (ids) => apply((b) => ops.approveTransactions(b, ids)),
-    setSplits: (id, splits, categoryIdWhenUnsplit) => apply((b) => ops.setSplits(b, id, splits, categoryIdWhenUnsplit)),
-
-    loadFormats: () => repoRef.current?.loadFormats() ?? Promise.resolve([]),
-    saveFormats: (formats) => repoRef.current?.saveFormats(formats) ?? Promise.resolve(),
-    statementSourceKey: async (accountId, formatId) => {
-      const repo = repoRef.current;
-      // Browser preview: deterministic per-account key, nothing persisted.
-      if (!repo) return `stmt:${accountId}`;
-      const budgetId = budget.budget.id;
-      const entries = await repo.loadImportSources(budgetId);
-      const existing = entries.find((e) => e.accountId === accountId);
-      if (existing) return existing.sourceKey;
-      const sourceKey = newId();
-      await repo.saveImportSources(budgetId, [...entries, { accountId, formatId, sourceKey }]);
-      return sourceKey;
-    },
-  };
-
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return (
+    <ActionsCtx.Provider value={actions}>
+      <DataCtx.Provider value={data}>{children}</DataCtx.Provider>
+    </ActionsCtx.Provider>
+  );
 }
 
-export function useApp(): AppState {
-  const v = useContext(Ctx);
-  if (!v) throw new Error("useApp must be used within AppProvider");
+/** Budget data + navigation. Re-renders subscribers when the budget changes. */
+export function useBudgetState(): BudgetState {
+  const v = useContext(DataCtx);
+  if (!v) throw new Error("useBudgetState must be used within AppProvider");
   return v;
+}
+
+/** Mutations only — a stable object, safe to depend on in memoized components. */
+export function useActions(): Actions {
+  const v = useContext(ActionsCtx);
+  if (!v) throw new Error("useActions must be used within AppProvider");
+  return v;
+}
+
+/** Convenience for components that need both (most of the app today). */
+export function useApp(): AppState {
+  const data = useBudgetState();
+  const actions = useActions();
+  return useMemo(() => ({ ...data, ...actions }), [data, actions]);
 }
