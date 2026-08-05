@@ -1,4 +1,4 @@
-import type { NormTxn } from "./normalize.js";
+import type { NormTxn } from "./register.js";
 import type { StagedLine, StagedTxn } from "./staged.js";
 import { fold } from "./text.js";
 

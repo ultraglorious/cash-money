@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { epochDay } from "../time.js";
-import { fold } from "./normalize.js";
+import { fold } from "./text.js";
 import type { StagedTxn, StagedKind } from "./staged.js";
 import { dedupeWithinTransfers } from "./transfers.js";
 

@@ -1,7 +1,7 @@
 import { newId, type Ulid } from "../ids.js";
 import type { Account, AccountType } from "../model/types.js";
 import type { ImportConfig } from "./config.js";
-import { fold } from "./normalize.js";
+import { fold } from "./text.js";
 import type { StagedTxn } from "./staged.js";
 
 /** Accounts are keyed by (sourceKey, accountFold) so each source stays distinct. */

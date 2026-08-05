@@ -13,8 +13,19 @@ export * from "./persistence/repository.js";
 export { InMemoryFileSystem } from "./persistence/memoryFs.js";
 export * from "./engine/index.js";
 export * as ops from "./ops.js";
-export * from "./import/csv.js";
-export * from "./import/bankCsv.js";
+export * from "./import/format.js";
+export { builtinFormat, builtinFormats } from "./import/formats/index.js";
+export { parseCsv, parseDateAs, mapRegisterRows, type ParsedCsv, type NormTxn, type MapRegisterOptions, type MapRegisterResult } from "./import/register.js";
+// bankCsv is on its way out (statement import moves onto the shared pipeline);
+// export only what the current wizard still uses, avoiding the AmountMapping clash.
+export {
+  dedupeBankDrafts,
+  mapBankRows,
+  parseBankCsv,
+  type BankDateFormat,
+  type BankDraft,
+  type BankMapping,
+} from "./import/bankCsv.js";
 export * from "./import/config.js";
 export { stageImport, type SourceInput, type ImportReport, type StagingResult } from "./import/pipeline.js";
 export { reconcileTransactions, type ReconcileReport, type ReconcileResult } from "./import/reconcile.js";

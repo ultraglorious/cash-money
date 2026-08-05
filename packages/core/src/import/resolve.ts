@@ -1,4 +1,4 @@
-import { fold } from "./normalize.js";
+import { fold } from "./text.js";
 import { newId, type Ulid } from "../ids.js";
 import type { Cents } from "../money.js";
 import type { SplitLine, Transaction } from "../model/types.js";

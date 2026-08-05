@@ -2,7 +2,7 @@ import { newId, type Ulid } from "../ids.js";
 import type { Account, Category, CategoryGroup, CategoryGroupKind } from "../model/types.js";
 import type { AccountsResult } from "./accounts.js";
 import type { ImportConfig } from "./config.js";
-import type { NormPlan } from "./normalize.js";
+import type { NormPlan } from "./planCsv.js";
 import type { StagedTxn } from "./staged.js";
 
 const SEP = "␟";
