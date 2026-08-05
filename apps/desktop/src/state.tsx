@@ -74,6 +74,7 @@ interface AppState {
   deleteCategory: (id: Ulid) => void;
   setAssigned: (month: MonthKey, categoryId: Ulid, amount: Cents) => void;
   moveMoney: (month: MonthKey, from: Ulid, to: Ulid, amount: Cents) => void;
+  coverShortfall: (month: MonthKey, from: Ulid, to: Ulid) => void;
   getAssigned: (month: MonthKey, categoryId: Ulid) => Cents;
   addTransaction: (tx: Transaction) => void;
   addTransactions: (txs: Transaction[]) => void;
@@ -257,6 +258,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     deleteCategory: (id) => apply((b) => ops.deleteCategory(b, id)),
     setAssigned: (m, categoryId, amount) => apply((b) => ops.setAssigned(b, m, categoryId, amount)),
     moveMoney: (m, from, to, amount) => apply((b) => ops.moveMoney(b, m, from, to, amount)),
+    coverShortfall: (m, from, to) => apply((b) => ops.coverShortfall(b, m, from, to)),
     getAssigned: (m, categoryId) => ops.getAssigned(budget, m, categoryId),
     addTransaction: (tx) => apply((b) => ops.addTransaction(b, tx)),
     addTransactions: (txs) => apply((b) => ops.addTransactions(b, txs)),

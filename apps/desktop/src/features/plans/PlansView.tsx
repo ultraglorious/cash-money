@@ -521,7 +521,7 @@ function AvailableCell({ categoryId, available, candidates }: { categoryId: Ulid
         <Menu.Label>Cover {money(shortfall, app.currency)} from…</Menu.Label>
         {options.length === 0 && <Menu.Item disabled>No category has money to spare</Menu.Item>}
         {options.map((c) => (
-          <Menu.Item key={c.categoryId} onClick={() => app.moveMoney(app.month, c.categoryId, categoryId, shortfall as Cents)} rightSection={<Text size="xs" c="dimmed">{money(c.available, app.currency)}</Text>}>{c.name}</Menu.Item>
+          <Menu.Item key={c.categoryId} onClick={() => app.coverShortfall(app.month, c.categoryId, categoryId)} rightSection={<Text size="xs" c="dimmed">{money(c.available, app.currency)}</Text>}>{c.name}</Menu.Item>
         ))}
       </Menu.Dropdown>
     </Menu>

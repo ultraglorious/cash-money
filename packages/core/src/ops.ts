@@ -1,6 +1,7 @@
 import { newId, type Ulid } from "./ids.js";
 import type { Cents } from "./money.js";
 import type { MonthKey } from "./time.js";
+import { computeProjection } from "./engine/compute.js";
 import type {
   Account,
   AccountType,
@@ -233,6 +234,26 @@ export function moveMoney(
   let next = setAssigned(b, month, fromCategoryId, (from - amount) as Cents);
   next = setAssigned(next, month, toCategoryId, (to + amount) as Cents);
   return next;
+}
+
+/**
+ * Cover `toCategoryId`'s shortfall in `month` from another category, moving at
+ * most what the donor actually has available — covering a €50 hole from a €5
+ * envelope moves €5, never driving the donor negative. No-op when there is no
+ * shortfall or the donor has nothing to spare.
+ */
+export function coverShortfall(
+  b: LoadedBudget,
+  month: MonthKey,
+  fromCategoryId: Ulid,
+  toCategoryId: Ulid,
+): LoadedBudget {
+  const p = computeProjection(b);
+  const shortfall = Math.max(0, -p.availableOf(toCategoryId, month));
+  const headroom = Math.max(0, p.availableOf(fromCategoryId, month));
+  const amount = Math.min(shortfall, headroom);
+  if (amount === 0) return b;
+  return moveMoney(b, month, fromCategoryId, toCategoryId, amount as Cents);
 }
 
 // ---- Transactions ----------------------------------------------------------

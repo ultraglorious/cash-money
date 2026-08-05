@@ -146,6 +146,35 @@ describe("assignment ops", () => {
     expect(ops.getAssigned(b2, "2026-02", DIN)).toBe(999);
   });
 
+  it("coverShortfall moves exactly the shortfall when the donor can afford it", () => {
+    // DIN: assigned 30000, spend 40000 -> available -10000. GRO has 30000 spare.
+    const withHole = ops.addTransaction(
+      base(),
+      f.txn({ id: f.tid("TDIN"), accountId: CHK, date: "2026-01-12", amount: -40000 as Cents, categoryId: DIN }),
+    );
+    const b = ops.coverShortfall(withHole, M, GRO, DIN);
+    const p = computeProjection(b);
+    expect(p.availableOf(DIN, M)).toBe(0);
+    expect(p.availableOf(GRO, M)).toBe(20000); // 30000 - 10000
+  });
+
+  it("coverShortfall never overdraws the donor (clamps to its available)", () => {
+    // DIN: assigned 30000, spend 100000 -> available -70000. GRO only has 30000.
+    const withHole = ops.addTransaction(
+      base(),
+      f.txn({ id: f.tid("TDIN"), accountId: CHK, date: "2026-01-12", amount: -100000 as Cents, categoryId: DIN }),
+    );
+    const b = ops.coverShortfall(withHole, M, GRO, DIN);
+    const p = computeProjection(b);
+    expect(p.availableOf(GRO, M)).toBe(0); // drained exactly to zero, not below
+    expect(p.availableOf(DIN, M)).toBe(-40000); // hole shrinks by what GRO had
+  });
+
+  it("coverShortfall is a no-op without a shortfall", () => {
+    const b = base(); // DIN is not negative here
+    expect(ops.coverShortfall(b, M, GRO, DIN)).toBe(b); // same object back
+  });
+
   it("moveMoney shifts Available between categories but leaves Ready to Assign unchanged", () => {
     const before = computeProjection(base());
     const rtaBefore = before.readyToAssignOf(M);
