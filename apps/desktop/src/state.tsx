@@ -57,6 +57,8 @@ interface AppState {
   replaceBudget: (b: LoadedBudget) => void;
   addAccount: (args: { name: string; type: AccountType; onBudget?: boolean; household?: string }) => void;
   setAccountOrder: (orderedIds: Ulid[]) => void;
+  setAccountClosed: (id: Ulid, closed: boolean) => void;
+  renameAccount: (id: Ulid, name: string) => void;
   reorderCategory: (categoryId: Ulid, toGroupId: Ulid, targetIndex: number) => void;
   setCategoryOrder: (groupId: Ulid, orderedIds: Ulid[]) => void;
   setGroupOrder: (orderedGroupIds: Ulid[]) => void;
@@ -172,6 +174,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     replaceBudget: (b) => dispatch({ type: "set", budget: b }),
     addAccount: (args) => apply((b) => ops.addAccount(b, args)),
     setAccountOrder: (orderedIds) => apply((b) => ops.setAccountOrder(b, orderedIds)),
+    setAccountClosed: (id, closed) => apply((b) => ops.setAccountClosed(b, id, closed)),
+    renameAccount: (id, name) => apply((b) => ops.renameAccount(b, id, name)),
     reorderCategory: (categoryId, toGroupId, targetIndex) => apply((b) => ops.reorderCategory(b, categoryId, toGroupId, targetIndex)),
     setCategoryOrder: (groupId, orderedIds) => apply((b) => ops.setCategoryOrder(b, groupId, orderedIds)),
     setGroupOrder: (orderedGroupIds) => apply((b) => ops.setGroupOrder(b, orderedGroupIds)),

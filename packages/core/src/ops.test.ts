@@ -47,6 +47,13 @@ describe("account ops", () => {
     b = ops.addAccount(b, { name: "Brokerage", type: "tracking" });
     expect(b.accounts.find((a) => a.name === "Brokerage")!.onBudget).toBe(false);
   });
+
+  it("setAccountClosed hides/shows and renameAccount renames", () => {
+    let b = ops.setAccountClosed(base(), CHK, true);
+    expect(b.accounts.find((a) => a.id === CHK)!.closed).toBe(true);
+    b = ops.renameAccount(b, CHK, "Main");
+    expect(b.accounts.find((a) => a.id === CHK)!.name).toBe("Main");
+  });
 });
 
 describe("section ops", () => {

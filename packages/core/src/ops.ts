@@ -42,6 +42,17 @@ export function addAccount(
   return { ...b, accounts: [...b.accounts, account] };
 }
 
+/** Hide (close) or show an account. Hidden accounts stay in the data but drop
+ * out of the sidebar and totals. */
+export function setAccountClosed(b: LoadedBudget, accountId: Ulid, closed: boolean): LoadedBudget {
+  return { ...b, accounts: replace(b.accounts, accountId, (a) => ({ ...a, closed })) };
+}
+
+/** Rename an account. */
+export function renameAccount(b: LoadedBudget, accountId: Ulid, name: string): LoadedBudget {
+  return { ...b, accounts: replace(b.accounts, accountId, (a) => ({ ...a, name })) };
+}
+
 /** Set the display order of household panels in the Plan. */
 export function setHouseholdOrder(b: LoadedBudget, orderedHouseholds: readonly string[]): LoadedBudget {
   return { ...b, budget: { ...b.budget, householdOrder: [...orderedHouseholds] } };

@@ -18,6 +18,7 @@ import {
   IconLayoutGrid,
   IconPigMoney,
   IconPlus,
+  IconSettings,
   IconTargetArrow,
 } from "@tabler/icons-react";
 import type { Account, Ulid } from "@cash-money/core";
@@ -25,6 +26,7 @@ import { useApp } from "../state";
 import { money } from "../format";
 import { amountColor, householdColor } from "../theme";
 import { AddAccountModal } from "./AddAccountModal";
+import { ManageAccountsModal } from "./ManageAccountsModal";
 import { ImportWizard } from "../features/import/ImportWizard";
 import { BankImportWizard } from "../features/import/BankImportWizard";
 import { Wordmark } from "./Wordmark";
@@ -40,6 +42,7 @@ export function Sidebar() {
   const [addOpen, addModal] = useDisclosure(false);
   const [importOpen, importModal] = useDisclosure(false);
   const [bankOpen, bankModal] = useDisclosure(false);
+  const [manageOpen, manageModal] = useDisclosure(false);
   const balances = projection.accountBalances();
   const households = projection.households;
   const balOf = (id: Ulid) => balances.get(id) ?? 0;
@@ -77,9 +80,14 @@ export function Sidebar() {
 
         <Group justify="space-between" px="sm" mt="md" mb={4}>
           <Text size="xs" c="dimmed" fw={700} tt="uppercase">Accounts</Text>
-          <Tooltip label="Add account" withArrow>
-            <ActionIcon size="sm" variant="subtle" color="gray" onClick={addModal.open} aria-label="Add account"><IconPlus size={15} /></ActionIcon>
-          </Tooltip>
+          <Group gap={2}>
+            <Tooltip label="Manage accounts" withArrow>
+              <ActionIcon size="sm" variant="subtle" color="gray" onClick={manageModal.open} aria-label="Manage accounts"><IconSettings size={15} /></ActionIcon>
+            </Tooltip>
+            <Tooltip label="Add account" withArrow>
+              <ActionIcon size="sm" variant="subtle" color="gray" onClick={addModal.open} aria-label="Add account"><IconPlus size={15} /></ActionIcon>
+            </Tooltip>
+          </Group>
         </Group>
 
         <NavLink
@@ -113,6 +121,7 @@ export function Sidebar() {
       </Group>
 
       <AddAccountModal opened={addOpen} onClose={addModal.close} />
+      <ManageAccountsModal opened={manageOpen} onClose={manageModal.close} />
       <ImportWizard opened={importOpen} onClose={importModal.close} />
       <BankImportWizard opened={bankOpen} onClose={bankModal.close} />
     </Stack>
