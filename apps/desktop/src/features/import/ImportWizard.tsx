@@ -85,12 +85,11 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
       const config: ImportConfig = {
         currency: app.currency,
         budgetName: app.budget.budget.name,
-        exportDate: sources[0]?.exportDate ?? today(),
-        sources: sources.map((s) => ({ sourceKey: s.sourceKey, label: s.household, household: s.household })),
+        sources: sources.map((s) => ({ sourceKey: s.sourceKey, label: s.household, household: s.household, exportDate: s.exportDate })),
         trackingAccountHints: ["investment", "etf", "etc", "shares", "deposit"],
       };
       const inputs = sources.map((s) => ({ sourceKey: s.sourceKey, registerCsv: s.register, planCsv: s.plan }));
-      setResult(stageImport(inputs, config, config.exportDate));
+      setResult(stageImport(inputs, config, today()));
     } catch (e) {
       setError(String(e));
       setResult(null);

@@ -53,7 +53,9 @@ function main(): void {
   const config = JSON.parse(readFileSync(configPath, "utf-8")) as DryRunConfig;
 
   const inputs = loadInputs(dir, config);
-  const { staging, oracle, report } = stageImport(inputs, config, config.exportDate);
+  if (!config.exportDate) throw new Error("dry-run config must set exportDate");
+  const asOf = config.exportDate;
+  const { staging, oracle, report } = stageImport(inputs, config, asOf);
   const p = computeProjection(staging);
 
   const lines: string[] = [];
@@ -113,7 +115,7 @@ function main(): void {
   log();
 
   // Idempotency on real data.
-  const second = stageImport(inputs, config, config.exportDate).staging.transactions;
+  const second = stageImport(inputs, config, asOf).staging.transactions;
   const rec = reconcileTransactions(staging.transactions, second);
   log(`## Idempotency (re-import the same export)`);
   log(`- added=${rec.report.added}, changed=${rec.report.changed}, unchanged=${rec.report.unchanged}, deleted=${rec.report.deleted}`);

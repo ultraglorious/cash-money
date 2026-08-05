@@ -17,7 +17,8 @@ import type { StagedTxn } from "./staged.js";
 export interface SourceInput {
   sourceKey: string;
   registerCsv: string;
-  planCsv: string;
+  /** Assigned-amounts CSV; only zip-register-plan packaged sources have one. */
+  planCsv?: string;
 }
 
 export interface ImportReport {
@@ -54,10 +55,8 @@ export function stageImport(
   config: ImportConfig,
   createdAt: ISODate,
 ): StagingResult {
-  const labelOf = new Map(config.sources.map((s) => [s.sourceKey, s.label]));
-  // All sources currently use the library budget-export format; per-source
-  // formats arrive with the descriptor-driven wizard.
-  const format = builtinFormat("lib:budget-export-register")!;
+  const sourceCfg = new Map(config.sources.map((s) => [s.sourceKey, s]));
+  const defaultFormat = builtinFormat("lib:budget-export-register")!;
 
   const staged: StagedTxn[] = [];
   const plan: NormPlan[] = [];
@@ -66,20 +65,24 @@ export function stageImport(
   let splitsReconstructed = 0;
 
   for (const input of inputs) {
+    const cfg = sourceCfg.get(input.sourceKey);
+    const format = cfg?.format ?? defaultFormat;
     const mapped = mapRegisterRows(parseCsv(input.registerCsv), format, {
       sourceKey: input.sourceKey,
       currency: config.currency,
-      exportDate: config.exportDate,
+      exportDate: cfg?.exportDate ?? config.exportDate,
     });
     if (mapped.errors.length > 0) {
       // A snapshot import must be perfect; surface the first problems and stop.
       throw new Error(`[${input.sourceKey}] ${mapped.errors.slice(0, 3).join("; ")}`);
     }
-    const planRows = parsePlan(input.planCsv, {
-      sourceKey: input.sourceKey,
-      currency: config.currency,
-      semantics: format.semantics,
-    });
+    const planRows = input.planCsv
+      ? parsePlan(input.planCsv, {
+          sourceKey: input.sourceKey,
+          currency: config.currency,
+          semantics: format.semantics,
+        })
+      : [];
     const stagedForSource = buildStagedTransactions(mapped.rows);
     for (const t of stagedForSource) {
       if (t.sourceRows.length > 1) splitsReconstructed++;
@@ -89,7 +92,7 @@ export function stageImport(
     plan.push(...planRows);
     sourcesMeta.push({
       sourceKey: input.sourceKey,
-      label: labelOf.get(input.sourceKey) ?? input.sourceKey,
+      label: cfg?.label ?? input.sourceKey,
       registerRows: mapped.rows.length,
       planRows: planRows.length,
     });

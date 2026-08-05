@@ -1,11 +1,12 @@
 import type { CurrencyConfig } from "../money.js";
 import type { ISODate } from "../time.js";
 import type { AccountType } from "../model/types.js";
+import type { RegisterFormat } from "./format.js";
 
 /**
  * Import configuration. This type carries NO real values — the concrete config
- * (source labels, link-payee names, exclusions) is supplied at runtime from a
- * file kept out of the repo, so no personal data is ever committed.
+ * (source labels, household names) is supplied at runtime from a file kept out
+ * of the repo, so no personal data is ever committed.
  */
 
 export interface SourceConfig {
@@ -15,6 +16,10 @@ export interface SourceConfig {
   label: string;
   /** Household tag applied to this source's category groups to keep them distinct. */
   household: string;
+  /** How this source's register CSV is shaped. Default: the library budget-export format. */
+  format?: RegisterFormat;
+  /** This source's "as of" date; rows dated after it import as unapproved. */
+  exportDate?: ISODate;
 }
 
 export interface ImportConfig {
@@ -22,8 +27,8 @@ export interface ImportConfig {
   /** Name for the merged budget. */
   budgetName?: string;
   sources: SourceConfig[];
-  /** "as of" date from the export; rows dated after this import as unapproved. */
-  exportDate: ISODate;
+  /** Fallback "as of" date for sources that don't declare their own. */
+  exportDate?: ISODate;
   /** Optional account-name → type overrides; otherwise inferred from the name. */
   accountTypeOverrides?: Record<string, AccountType>;
   /**

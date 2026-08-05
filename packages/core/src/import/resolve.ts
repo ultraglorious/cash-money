@@ -27,6 +27,9 @@ export function resolveTransactions(
   config: ImportConfig,
 ): ResolveResult {
   const householdOf = new Map(config.sources.map((s) => [s.sourceKey, s.household]));
+  // Provenance timestamps come from the source's own "as of" date; a row's own
+  // date is the principled floor when no export date was declared at all.
+  const exportDateOf = new Map(config.sources.map((s) => [s.sourceKey, s.exportDate ?? config.exportDate]));
 
   // Natural keys + stable identities across the whole snapshot.
   const withKeys = staged.map((t) => ({
@@ -83,8 +86,8 @@ export function resolveTransactions(
         naturalKey,
         occurrenceIndex,
         identity,
-        firstSeenExportTs: config.exportDate,
-        lastSeenExportTs: config.exportDate,
+        firstSeenExportTs: exportDateOf.get(t.sourceKey) ?? t.date,
+        lastSeenExportTs: exportDateOf.get(t.sourceKey) ?? t.date,
       },
     };
 
