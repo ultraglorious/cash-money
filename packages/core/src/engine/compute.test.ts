@@ -194,6 +194,56 @@ describe("splits, off-budget, and unapproved handling", () => {
   });
 });
 
+describe("credit-card overspend", () => {
+  // Jan: income 100, assign 60 to Groceries, then spend 100 in Groceries (a 40
+  // overspend). Whether that overspend is cash or credit depends on the account.
+  function scenario(onCard: boolean): LoadedBudget {
+    const checking = f.account({ id: f.tid("ACHK"), name: "Checking", type: "checking" });
+    const card = f.account({ id: f.tid("ACRD"), name: "Card", type: "creditCard" });
+    const incomeGrp = f.group({ id: f.tid("GINC"), name: "Inflow", kind: "income", sortOrder: 0 });
+    const evGrp = f.group({ id: f.tid("GEVD"), name: "Everyday", kind: "normal", sortOrder: 1 });
+    const ccGrp = f.group({ id: f.tid("GCCP"), name: "Card Payments", kind: "creditCardPayments", sortOrder: 2 });
+    const rta = f.category({ id: f.tid("CRTA"), groupId: incomeGrp.id, name: "Ready to Assign" });
+    const gro = f.category({ id: f.tid("CGRO"), groupId: evGrp.id, name: "Groceries" });
+    const pay = f.category({ id: f.tid("CPAY"), groupId: ccGrp.id, name: "Card", linkedAccountId: card.id });
+    return {
+      budget: f.budget(),
+      accounts: [checking, card],
+      groups: [incomeGrp, evGrp, ccGrp],
+      categories: [rta, gro, pay],
+      assignments: [
+        f.assignment({ id: f.tid("A1"), month: "2026-01", categoryId: gro.id, assigned: 60000 as Cents }),
+        f.assignment({ id: f.tid("A2"), month: "2026-02", categoryId: gro.id, assigned: 0 as Cents }), // extends range to Feb
+      ],
+      transactions: [
+        f.txn({ id: f.tid("T1"), accountId: checking.id, date: "2026-01-05", amount: 100000 as Cents, categoryId: rta.id }),
+        f.txn({ id: f.tid("T2"), accountId: onCard ? card.id : checking.id, date: "2026-01-10", amount: -100000 as Cents, categoryId: gro.id }),
+      ],
+    };
+  }
+
+  it("credit overspend becomes card debt, resets the envelope, and never reduces Ready-to-Assign", () => {
+    const p = computeProjection(scenario(true));
+    const GRO = f.tid("CGRO");
+    const PAY = f.tid("CPAY");
+    // Jan: the envelope shows the overspend; only the covered 60 is set aside to pay.
+    expect(p.availableOf(GRO, "2026-01")).toBe(-40000);
+    expect(p.availableOf(PAY, "2026-01")).toBe(60000);
+    // Feb: envelope resets to 0; the 40 stays as debt on the card; RTA still 100−60.
+    expect(p.availableOf(GRO, "2026-02")).toBe(0);
+    expect(p.readyToAssignOf("2026-02")).toBe(40000);
+  });
+
+  it("cash overspend is swept from Ready-to-Assign", () => {
+    const p = computeProjection(scenario(false));
+    const GRO = f.tid("CGRO");
+    expect(p.availableOf(GRO, "2026-01")).toBe(-40000);
+    expect(p.availableOf(GRO, "2026-02")).toBe(0); // resets
+    // Feb: the 40 cash overspend has reduced Ready-to-Assign (100 − 60 − 40).
+    expect(p.readyToAssignOf("2026-02")).toBe(0);
+  });
+});
+
 describe("per-household Ready to Assign", () => {
   function twoHouseholds(): LoadedBudget {
     const chk = f.account({ id: f.tid("ACHK"), name: "Checking", type: "checking", household: "Personal" });

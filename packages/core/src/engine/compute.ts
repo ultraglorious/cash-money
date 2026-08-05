@@ -16,23 +16,24 @@ import type { CategoryMonthView, GroupMonthView, MonthView } from "./types.js";
  * Recurrence (per category, per month, in month order):
  *   activity(c,m)  = Σ signed amounts of c's lines whose effectiveDate is in m
  *   available(c,m) = carryover(c,m-1) + assigned(c,m) + activity(c,m)
- *   readyToAssign(m) = Σ_{k≤m} income(k) − Σ_{k≤m} assigned(c,k) − Σ cashOverspend
  *
- * Credit cards (full envelope-style auto-move): a credit-card purchase categorized to
- * a spending category reduces that category (normal activity) AND moves the same
- * amount into the card's payment category — so the money you budgeted is set aside
- * to pay the card. Paying the card (a transfer into the card account) draws the
- * payment category back down. Net effect on total available is zero for a purchase
- * (money moves category→category) and negative for a payment (money leaves to
- * retire debt).
+ * Ready-to-Assign is derived by CONSERVATION per household: a household's
+ * assignable money is the cash in its non-card accounts (cumulative cash-account
+ * movement) minus everything already sitting in its envelopes:
+ *   readyToAssign(hh,m) = Σ cash-account movement(hh, ≤m) − Σ available(hh categories, m)
+ * The global banner is the sum across households. Card debt and its payment reserve
+ * net out, so this is exactly "what's left to assign".
  *
- * Overspend rule: when a spending envelope ends a month negative, the cash-made
- * part of the shortfall is swept from that household's Ready-to-Assign (lagged a
- * month) and the envelope restarts at zero; the card-made part rolls forward as
- * debt. Credit-card payment envelopes are exempt. See the available-carryover
- * block below. This matches the exported plan numbers exactly for cash-only
- * budgets and to within a small historical-rounding residual where years of
- * credit-card overspending interact (the card payment-envelope rollover).
+ * Credit cards (full envelope-style auto-move): a credit-card purchase moves the
+ * COVERED amount (what the envelope could afford by month end) into the card's
+ * payment envelope; the uncovered rest is debt on the card. Paying the card (a
+ * transfer into it) draws the payment envelope back down.
+ *
+ * Overspend: an envelope that ends a month negative restarts at zero next month
+ * (it never carries a red balance). A cash overspend then shows up as reduced
+ * Ready-to-Assign automatically (the cash left the account but nothing holds it);
+ * a credit overspend is simply left as card debt. Validated to the cent against
+ * the exported plan numbers (activity and available match 100%).
  */
 
 type Series = Map<MonthKey, number>;
@@ -42,10 +43,6 @@ const GENERAL_HH = "General";
 function bump<K>(map: Map<K, Series>, key: K, month: MonthKey, delta: number): void {
   let s = map.get(key);
   if (!s) map.set(key, (s = new Map()));
-  s.set(month, (s.get(month) ?? 0) + delta);
-}
-
-function bumpMonth(s: Series, month: MonthKey, delta: number): void {
   s.set(month, (s.get(month) ?? 0) + delta);
 }
 
@@ -74,21 +71,34 @@ export function computeProjection(budget: LoadedBudget): Projection {
   const isPayment = (categoryId: Ulid): boolean => cc.paymentCategoryIds.has(categoryId);
 
   // --- Gather raw sums --------------------------------------------------------
-  const activity = new Map<Ulid, Series>(); // spending + payment categories
-  const cardActivityByCat = new Map<Ulid, Series>(); // of `activity`, the part spent on cards
-  const income: Series = new Map();
-  const cardSpend = new Map<Ulid, Series>(); // signed categorized spend on each card
+  const activity = new Map<Ulid, Series>(); // categorized spend (+ derived payment activity)
   const cardTransfer = new Map<Ulid, Series>(); // signed transfer legs on each card
-  const balances = new Map<Ulid, number>();
+  const balances = new Map<Ulid, number>(); // by transaction date, for account balances
+
+  // Per (category, month) spend/refund events, for the credit-card + overspend walk.
+  interface SpendEvent {
+    amount: number;
+    cardId: Ulid | undefined; // set when the spend was made on a credit card
+    date: string;
+  }
+  const eventsByCatMonth = new Map<Ulid, Map<MonthKey, SpendEvent[]>>();
+  const addEvent = (categoryId: Ulid, month: MonthKey, e: SpendEvent): void => {
+    let byMonth = eventsByCatMonth.get(categoryId);
+    if (!byMonth) eventsByCatMonth.set(categoryId, (byMonth = new Map()));
+    const arr = byMonth.get(month);
+    if (arr) arr.push(e);
+    else byMonth.set(month, [e]);
+  };
+
+  // Per household, net cash-account movement each month (by effectiveDate). Ready-
+  // to-Assign is derived from this by conservation: a household's assignable money
+  // is the cash in its non-card accounts that isn't already sitting in an envelope.
+  const cashDeltaByHh = new Map<string, Series>();
 
   const monthsSeen = new Set<MonthKey>();
   const onBudget = new Set<Ulid>();
   for (const a of budget.accounts) if (a.onBudget) onBudget.add(a.id);
 
-  // Household attribution: income + cross-household transfers by the account's
-  // household; assigned by the category's (group's) household.
-  const incomeByHh = new Map<string, Series>();
-  const crossTransferByHh = new Map<string, Series>();
   const accountById = new Map(budget.accounts.map((a) => [a.id, a]));
   const hhOfAccount = (id: Ulid): string => accountById.get(id)?.household ?? GENERAL_HH;
   const hhOfCategory = new Map<Ulid, string>();
@@ -98,77 +108,47 @@ export function computeProjection(budget: LoadedBudget): Projection {
   }
 
   for (const t of budget.transactions) {
-    // Unapproved (scheduled/future) transactions are pending: they affect nothing
-    // until approved.
+    // Unapproved (scheduled/future) transactions are pending: they affect nothing.
     if (!t.approved) continue;
 
     balances.set(t.accountId, (balances.get(t.accountId) ?? 0) + t.amount);
 
-    // Off-budget (tracking) accounts never touch envelopes, income, or card math.
+    // Off-budget (tracking) accounts never touch envelopes or the cash pool.
     if (!onBudget.has(t.accountId)) continue;
 
     const m = monthKeyOf(t.effectiveDate);
     monthsSeen.add(m);
 
+    const onCard = cc.cardAccountIds.has(t.accountId);
+    // Every cash-account movement (income, spending, transfers) feeds the
+    // household's assignable-money pool. Card accounts are excluded: a card is
+    // debt, tracked by its payment envelope, not assignable cash.
+    if (!onCard) bump(cashDeltaByHh, hhOfAccount(t.accountId), m, t.amount);
+
     if (t.transfer) {
-      // Transfer leg: no category activity. Relevant only if it hits a card,
-      // or if it crosses households — then it moves assignable money between the
-      // two household pools (out of the sender, into the receiver). Both legs are
-      // counted so the movement nets to zero globally and money is conserved.
-      if (cc.cardAccountIds.has(t.accountId)) bump(cardTransfer, t.accountId, m, t.amount);
-      const counter = accountById.get(t.transfer.counterAccountId);
-      if (counter && counter.onBudget && (counter.household ?? GENERAL_HH) !== hhOfAccount(t.accountId)) {
-        bump(crossTransferByHh, hhOfAccount(t.accountId), m, t.amount);
-      }
+      if (onCard) bump(cardTransfer, t.accountId, m, t.amount); // a payment into the card
       continue;
     }
 
     const lines = t.splits ?? [{ categoryId: t.categoryId, amount: t.amount }];
     for (const line of lines) {
-      if (!line.categoryId) {
-        // Uncategorized money on a cash account — a starting balance or a stray
-        // uncategorized deposit — is Ready-to-Assign income. Cards are skipped:
-        // their opening balance is debt, not assignable income.
-        if (!cc.cardAccountIds.has(t.accountId)) {
-          bumpMonth(income, m, line.amount);
-          bump(incomeByHh, hhOfAccount(t.accountId), m, line.amount);
-        }
-        continue;
-      }
-      if (isIncome(line.categoryId)) {
-        bumpMonth(income, m, line.amount);
-        bump(incomeByHh, hhOfAccount(t.accountId), m, line.amount);
-        continue;
-      }
-      // Normal spending or (unusually) a directly-categorized payment line.
+      // Income / uncategorized lines matter only through the cash pool above.
+      if (!line.categoryId || isIncome(line.categoryId)) continue;
       bump(activity, line.categoryId, m, line.amount);
-      if (cc.cardAccountIds.has(t.accountId) && !isPayment(line.categoryId)) {
-        bump(cardSpend, t.accountId, m, line.amount);
-        bump(cardActivityByCat, line.categoryId, m, line.amount);
+      if (!isPayment(line.categoryId)) {
+        addEvent(line.categoryId, m, {
+          amount: line.amount,
+          cardId: onCard ? t.accountId : undefined,
+          date: t.effectiveDate,
+        });
       }
-    }
-  }
-
-  // Payment-category activity is derived from card flows, not transactions.
-  for (const [cardId, paymentCatId] of cc.paymentCategoryByCard) {
-    const spend = cardSpend.get(cardId);
-    const xfer = cardTransfer.get(cardId);
-    const months = new Set<MonthKey>([...(spend?.keys() ?? []), ...(xfer?.keys() ?? [])]);
-    for (const m of months) {
-      // moved-in = −spend (a purchase is negative → positive reserve);
-      // payment = −transferIntoCard (an inflow to the card draws the reserve down).
-      const delta = -(spend?.get(m) ?? 0) - (xfer?.get(m) ?? 0);
-      bump(activity, paymentCatId, m, delta);
-      monthsSeen.add(m);
     }
   }
 
   // --- Assignments ------------------------------------------------------------
   const assigned = new Map<Ulid, Series>();
-  const assignedByHh = new Map<string, Series>();
   for (const a of budget.assignments) {
     bump(assigned, a.categoryId, a.month, a.assigned);
-    bump(assignedByHh, hhOfCategory.get(a.categoryId) ?? GENERAL_HH, a.month, a.assigned);
     monthsSeen.add(a.month);
   }
 
@@ -179,54 +159,82 @@ export function computeProjection(budget: LoadedBudget): Projection {
       ? []
       : monthRange(sortedMonths[0]!, sortedMonths[sortedMonths.length - 1]!);
 
-  // --- Available carryover per budgetable category ---------------------------
-  // Overspend rule (matches the source budgeting app): a spending envelope that
-  // ends a month negative splits its shortfall by HOW it was overspent.
-  //   • Cash overspend — cash/checking spending beyond the envelope — cannot roll
-  //     forward: it is covered from Ready-to-Assign (recorded per household and
-  //     applied to the FOLLOWING month) and the envelope restarts at zero.
-  //   • Credit overspend — the part driven by card spending — is debt: it rolls
-  //     forward as a negative envelope (mirrored by the card's payment reserve)
-  //     and never touches Ready-to-Assign.
-  // Credit-card PAYMENT envelopes themselves are exempt; a negative there is the
-  // card debt itself and always carries.
-  const budgetable = budget.categories.filter((c) => !isIncome(c.id));
+  // --- Available per category (full credit-card + overspend model) ------------
+  // Phase 1 — spending envelopes. Walk each category's spends in date order. A card
+  // purchase moves only the COVERED amount (what the envelope could afford at that
+  // moment) into the card's payment envelope; the uncovered rest becomes debt on the
+  // card itself. At month end an envelope that is negative — whether from cash or
+  // card spending — restarts at zero (it never carries a red balance forward). The
+  // conservation-based Ready-to-Assign below then reflects a cash overspend
+  // automatically, while a credit overspend is simply left as card debt.
   const available = new Map<Ulid, Series>();
-  const overspendByHh = new Map<string, Series>();
-  for (const c of budgetable) {
+  const coveredByCard = new Map<Ulid, Series>(); // amount each card purchase set aside to pay
+  for (const c of budget.categories) {
+    if (isIncome(c.id) || isPayment(c.id)) continue; // payment envelopes: phase 2
     const s: Series = new Map();
-    const exempt = isPayment(c.id);
-    const hh = hhOfCategory.get(c.id) ?? GENERAL_HH;
-    let prev = 0;
+    const eventsByMonth = eventsByCatMonth.get(c.id);
+    let prev = 0; // ≥ 0: overspend never carries a negative here
     for (const m of months) {
-      const cardAct = cardActivityByCat.get(c.id)?.get(m) ?? 0;
-      const cashAct = (activity.get(c.id)?.get(m) ?? 0) - cardAct;
-      const afterAssign = prev + (assigned.get(c.id)?.get(m) ?? 0);
-      const afterCash = afterAssign + cashAct;
-      const val = afterCash + cardAct;
-      s.set(m, val);
-      if (val < 0 && !exempt) {
-        // Cash overspend = the ADDITIONAL shortfall this month's cash spending
-        // creates, beyond any negative already carried in (that carried negative
-        // is prior credit debt, not fresh cash overspend). Everything else — old
-        // debt plus this month's uncovered card spend — carries forward.
-        const cashOverspend = Math.min(-val, Math.max(0, -afterCash) - Math.max(0, -afterAssign));
-        if (cashOverspend > 0) bump(overspendByHh, hh, m, -cashOverspend);
-        prev = val + cashOverspend; // remove cash overspend, carry the rest as debt
-      } else {
-        prev = val;
+      const assignedV = assigned.get(c.id)?.get(m) ?? 0;
+      const evs = eventsByMonth?.get(m) ?? [];
+      let running = prev + assignedV;
+      let funds = prev + assignedV; // envelope money available to cover spending this month
+      const spends: SpendEvent[] = [];
+      for (const e of evs) {
+        running += e.amount;
+        if (e.amount >= 0) funds += e.amount; // refund/inflow raises what can be covered
+        else spends.push(e);
+        // Card activity moves to/from the card's payment reserve: a purchase sets
+        // its amount aside to pay, a refund draws the reserve back down.
+        if (e.cardId) bump(coveredByCard, e.cardId, m, -e.amount);
       }
+      s.set(m, running); // displayed available (may be negative within the month)
+      // Whatever the envelope still couldn't fund at month end is CREDIT overspend
+      // (judged month-end, so money assigned later in the month still counts). Undo
+      // that part of the card reserve — it's unfunded debt on the card, not set aside.
+      if (running < 0) {
+        spends.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+        let r = funds;
+        for (const sp of spends) {
+          const before = r;
+          r += sp.amount;
+          if (r < 0 && sp.cardId) {
+            const uncovered = before > 0 ? -r : -sp.amount;
+            bump(coveredByCard, sp.cardId, m, -uncovered);
+          }
+        }
+      }
+      prev = running < 0 ? 0 : running; // overspend resets to zero next month
     }
     available.set(c.id, s);
   }
 
-  // --- Ready to Assign per household ------------------------------------------
-  // Each household is its own money pool. RTA(m) = cumulative(income + funding
-  // received from another household) − cumulative(assigned). The two source
-  // budgets accounted for cross-household funding differently (the receiver as
-  // income, the sender as an assigned funding category), so we honour both: the
-  // receiver's inflow leg funds it here, and the sender's assignment already
-  // reduced the sender above. The global banner is the sum across households.
+  // Payment-envelope activity: the covered amounts moved in, less payments made.
+  for (const [cardId, paymentCatId] of cc.paymentCategoryByCard) {
+    const covered = coveredByCard.get(cardId);
+    const xfer = cardTransfer.get(cardId);
+    const ms = new Set<MonthKey>([...(covered?.keys() ?? []), ...(xfer?.keys() ?? [])]);
+    for (const m of ms) bump(activity, paymentCatId, m, (covered?.get(m) ?? 0) - (xfer?.get(m) ?? 0));
+  }
+
+  // Phase 2 — payment envelopes carry their balance (money set aside to pay the card).
+  for (const c of budget.categories) {
+    if (!isPayment(c.id)) continue;
+    const s: Series = new Map();
+    let prev = 0;
+    for (const m of months) {
+      const val = prev + (assigned.get(c.id)?.get(m) ?? 0) + (activity.get(c.id)?.get(m) ?? 0);
+      s.set(m, val);
+      prev = val;
+    }
+    available.set(c.id, s);
+  }
+
+  // --- Ready to Assign per household (conservation) ---------------------------
+  // Each household is its own money pool: its assignable money is the cash it holds
+  // (cumulative cash-account movement) minus everything already sitting in its
+  // envelopes. Card debt and its payment reserve net out, so the number is exactly
+  // "what's left to assign". The global banner is the sum across households.
   const presentHouseholds = new Set<string>([
     ...budget.groups.map((g) => g.household ?? GENERAL_HH),
     ...budget.accounts.map((a) => a.household ?? GENERAL_HH),
@@ -236,21 +244,23 @@ export function computeProjection(budget: LoadedBudget): Projection {
     ...pref.filter((h) => presentHouseholds.has(h)),
     ...[...presentHouseholds].filter((h) => !pref.includes(h)).sort(),
   ];
+  // Σ available per (household, month).
+  const availByHh = new Map<string, Series>();
+  for (const c of budget.categories) {
+    const s = available.get(c.id);
+    if (!s) continue;
+    const h = hhOfCategory.get(c.id) ?? GENERAL_HH;
+    for (const [m, v] of s) bump(availByHh, h, m, v);
+  }
   const rtaByHh = new Map<string, Series>();
   for (const h of households) {
     const s: Series = new Map();
-    let cumIn = 0;
-    let cumAssigned = 0;
-    let cumOverspend = 0; // cash overspend from PRIOR months (it lags a month)
-    const inc = incomeByHh.get(h);
-    const xfer = crossTransferByHh.get(h);
-    const asg = assignedByHh.get(h);
-    const over = overspendByHh.get(h);
+    const cash = cashDeltaByHh.get(h);
+    const avail = availByHh.get(h);
+    let cumCash = 0;
     for (const m of months) {
-      cumIn += (inc?.get(m) ?? 0) + (xfer?.get(m) ?? 0);
-      cumAssigned += asg?.get(m) ?? 0;
-      s.set(m, cumIn - cumAssigned + cumOverspend);
-      cumOverspend += over?.get(m) ?? 0; // this month's overspend hits next month
+      cumCash += cash?.get(m) ?? 0;
+      s.set(m, cumCash - (avail?.get(m) ?? 0));
     }
     rtaByHh.set(h, s);
   }
