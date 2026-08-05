@@ -29,6 +29,42 @@ async function save(repo: BudgetRepository, b: LoadedBudget): Promise<void> {
   await repo.writeAllTransactions(b.budget.id, b.transactions);
 }
 
+describe("saved formats and statement sources", () => {
+  const FORMAT = {
+    id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    name: "My bank",
+    date: { column: "Date", format: "iso" as const },
+    amount: { mode: "signed" as const, column: "Amount" },
+    payeeColumn: "Payee",
+  };
+
+  it("round-trips saved formats and drops invalid entries on load", async () => {
+    const fs = new InMemoryFileSystem();
+    const repo = new BudgetRepository(fs);
+    expect(await repo.loadFormats()).toEqual([]);
+    await repo.saveFormats([{ format: FORMAT, lastUsed: "2026-08-05" }]);
+    expect(await repo.loadFormats()).toEqual([{ format: FORMAT, lastUsed: "2026-08-05" }]);
+
+    // Corrupt one entry by hand: it is skipped, the file still loads.
+    await fs.writeTextFileAtomic(
+      layout.FORMATS_FILE,
+      JSON.stringify([{ format: FORMAT }, { format: { id: "broken" } }]),
+    );
+    const loaded = await repo.loadFormats();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]!.format.id).toBe(FORMAT.id);
+  });
+
+  it("round-trips the per-budget statement-source registry", async () => {
+    const repo = new BudgetRepository(new InMemoryFileSystem());
+    expect(await repo.loadImportSources("B1")).toEqual([]);
+    const entry = { accountId: f.tid("ACC1"), formatId: FORMAT.id, sourceKey: "SRC1" };
+    await repo.saveImportSources("B1", [entry]);
+    expect(await repo.loadImportSources("B1")).toEqual([entry]);
+    expect(await repo.loadImportSources("B2")).toEqual([]); // scoped per budget
+  });
+});
+
 describe("BudgetRepository round-trip", () => {
   it("saves and loads a budget losslessly", async () => {
     const fs = new InMemoryFileSystem();

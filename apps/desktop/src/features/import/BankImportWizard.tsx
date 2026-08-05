@@ -17,6 +17,7 @@ import {
 import { IconAlertTriangle, IconFileImport } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  guessFormat,
   parseCsv,
   stageStatement,
   type ImportDateFormat,
@@ -43,7 +44,6 @@ interface Preview {
 }
 
 const NONE = "— none —";
-const find = (headers: string[], re: RegExp) => headers.find((h) => re.test(h)) ?? "";
 
 export function BankImportWizard({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const app = useApp();
@@ -77,20 +77,18 @@ export function BankImportWizard({ opened, onClose }: { opened: boolean; onClose
       const { headers, rows } = parseCsv(text);
       setParsed({ fileName: selected.split(/[/\\]/).pop() ?? selected, text, headers, rowCount: rows.length });
       setPreview(null);
-      // Best-effort auto-guess of the mapping.
-      setDateColumn(find(headers, /date/i));
-      setPayeeColumn(find(headers, /payee|description|name|details|narrative|memo/i));
-      const memo = find(headers, /reference|note|memo/i);
-      setMemoColumn(memo || NONE);
-      const debit = find(headers, /debit|outflow|withdraw|paid.?out/i);
-      const credit = find(headers, /credit|inflow|deposit|paid.?in/i);
-      if (debit && credit) {
+      // Best-effort auto-guess of the mapping (user confirms/corrects below).
+      const guess = guessFormat(headers);
+      setDateColumn(guess.dateColumn ?? "");
+      setPayeeColumn(guess.payeeColumn ?? "");
+      setMemoColumn(guess.memoColumn ?? NONE);
+      if (guess.amount?.mode === "inOut") {
         setAmountMode("split");
-        setOutflowColumn(debit);
-        setInflowColumn(credit);
+        setInflowColumn(guess.amount.inflowColumn);
+        setOutflowColumn(guess.amount.outflowColumn);
       } else {
         setAmountMode("single");
-        setAmountColumn(find(headers, /amount|value/i));
+        setAmountColumn(guess.amount?.mode === "signed" ? guess.amount.column : "");
       }
       if (!accountId) setAccountId(app.budget.accounts[0]?.id ?? null);
     } catch (e) {
