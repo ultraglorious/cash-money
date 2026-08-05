@@ -18,13 +18,13 @@ import {
   IconPigMoney,
   IconPlus,
   IconTargetArrow,
-  IconWallet,
 } from "@tabler/icons-react";
 import type { Account, Ulid } from "@cash-money/core";
 import { useApp } from "../state";
 import { money } from "../format";
 import { amountColor, householdColor } from "../theme";
 import { AddAccountModal } from "./AddAccountModal";
+import { Logo } from "./Logo";
 
 function accountIcon(a: Account) {
   if (a.type === "creditCard") return IconCreditCard;
@@ -60,9 +60,7 @@ export function Sidebar() {
   return (
     <Stack h="100%" gap={0}>
       <Group gap="xs" px="md" py="md" wrap="nowrap">
-        <ThemeIcon size={34} radius="md" variant="gradient" gradient={{ from: "indigo", to: "violet" }}>
-          <IconWallet size={20} />
-        </ThemeIcon>
+        <Logo size={34} />
         <Box style={{ minWidth: 0 }}>
           <Text fw={700} truncate>{budget.budget.name}</Text>
           <Text size="xs" c="dimmed">{budget.budget.currency.code}</Text>
