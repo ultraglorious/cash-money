@@ -149,13 +149,17 @@ plan numbers as a correctness oracle. See
 
 Done and tested: money math, the envelope engine (incl. credit-card auto-move and
 per-household Ready-to-Assign), the import/merge/reconcile pipeline, the pure
-"ops" edit layer, file persistence (behind a port), and the full Plan +
-Transactions UI (on demo data).
+"ops" edit layer, file persistence, and the full Plan + Transactions UI. The
+native **Tauri shell** (atomic file writes, file picker, unzip commands) is in
+place, the app **loads/saves your real budget on disk**, and the **import wizard**
+(pick export → dry-run report → commit) works. In a plain browser the app still
+runs on demo data with no persistence.
 
 Not done yet:
 
-- **Native shell + persistence** — the Rust/Tauri commands (atomic file writes,
-  file picker, unzip) and wiring the UI to load/save your real budget on disk.
-- **Import wizard** — pick your export → see a dry-run report → commit.
 - **Analytics** — currently a placeholder.
+- **Re-import merge** — committing an import currently replaces the budget; a
+  future version will merge a re-import into an existing budget while preserving
+  in-app edits (the identity/reconcile machinery for this already exists).
 - **Sync** — the file layout is designed to drop into a synced folder later.
+- **Custom app icons** — still the default Tauri icons.

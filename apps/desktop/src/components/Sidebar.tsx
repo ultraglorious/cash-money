@@ -14,6 +14,7 @@ import {
   IconBuildingBank,
   IconChartHistogram,
   IconCreditCard,
+  IconFileImport,
   IconLayoutGrid,
   IconPigMoney,
   IconPlus,
@@ -24,6 +25,7 @@ import { useApp } from "../state";
 import { money } from "../format";
 import { amountColor, householdColor } from "../theme";
 import { AddAccountModal } from "./AddAccountModal";
+import { ImportWizard } from "../features/import/ImportWizard";
 import { Wordmark } from "./Wordmark";
 
 function accountIcon(a: Account) {
@@ -35,6 +37,7 @@ function accountIcon(a: Account) {
 export function Sidebar() {
   const { budget, projection, currency, view, setView, setAccountOrder } = useApp();
   const [addOpen, addModal] = useDisclosure(false);
+  const [importOpen, importModal] = useDisclosure(false);
   const balances = projection.accountBalances();
   const households = projection.households;
   const balOf = (id: Ulid) => balances.get(id) ?? 0;
@@ -69,6 +72,7 @@ export function Sidebar() {
       <ScrollArea style={{ flex: 1 }} px="xs">
         <NavLink active={view.kind === "plan"} label="Plan" leftSection={<IconTargetArrow size={18} />} onClick={() => setView({ kind: "plan" })} variant="filled" />
         <NavLink active={view.kind === "analytics"} label="Analytics" leftSection={<IconChartHistogram size={18} />} onClick={() => setView({ kind: "analytics" })} variant="filled" />
+        <NavLink label="Import" leftSection={<IconFileImport size={18} />} onClick={importModal.open} variant="filled" />
 
         <Group justify="space-between" px="sm" mt="md" mb={4}>
           <Text size="xs" c="dimmed" fw={700} tt="uppercase">Accounts</Text>
@@ -93,6 +97,7 @@ export function Sidebar() {
       </ScrollArea>
 
       <AddAccountModal opened={addOpen} onClose={addModal.close} />
+      <ImportWizard opened={importOpen} onClose={importModal.close} />
     </Stack>
   );
 }
