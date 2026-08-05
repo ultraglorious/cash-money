@@ -15,8 +15,8 @@ import type { CategoryMonthView, GroupMonthView, MonthView } from "./types.js";
  *
  * Recurrence (per category, per month, in month order):
  *   activity(c,m)  = Σ signed amounts of c's lines whose effectiveDate is in m
- *   available(c,m) = available(c,m-1) + assigned(c,m) + activity(c,m)
- *   readyToAssign(m) = Σ_{k≤m} income(k) − Σ_{k≤m, all budgetable c} assigned(c,k)
+ *   available(c,m) = carryover(c,m-1) + assigned(c,m) + activity(c,m)
+ *   readyToAssign(m) = Σ_{k≤m} income(k) − Σ_{k≤m} assigned(c,k) − Σ cashOverspend
  *
  * Credit cards (full envelope-style auto-move): a credit-card purchase categorized to
  * a spending category reduces that category (normal activity) AND moves the same
@@ -24,14 +24,15 @@ import type { CategoryMonthView, GroupMonthView, MonthView } from "./types.js";
  * to pay the card. Paying the card (a transfer into the card account) draws the
  * payment category back down. Net effect on total available is zero for a purchase
  * (money moves category→category) and negative for a payment (money leaves to
- * retire debt). See `paymentActivity` below.
+ * retire debt).
  *
- * v1 carryover simplification: `available` carries forward in full, including
- * negatives (money is conserved exactly). The classic extra rule — cash overspend
- * resets to 0 and reduces next month's Ready-to-Assign, while only credit
- * overspend rolls negative — is deferred; overspent cells are still flagged in the
- * UI. This keeps the recurrence a single clean line and is validated against the
- * exported plan numbers.
+ * Overspend rule: when a spending envelope ends a month negative, the cash-made
+ * part of the shortfall is swept from that household's Ready-to-Assign (lagged a
+ * month) and the envelope restarts at zero; the card-made part rolls forward as
+ * debt. Credit-card payment envelopes are exempt. See the available-carryover
+ * block below. This matches the exported plan numbers exactly for cash-only
+ * budgets and to within a small historical-rounding residual where years of
+ * credit-card overspending interact (the card payment-envelope rollover).
  */
 
 type Series = Map<MonthKey, number>;
