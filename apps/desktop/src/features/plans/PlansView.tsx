@@ -198,19 +198,26 @@ export function PlansView() {
               </ActionIcon>
             </Tooltip>
           </Group>
-          {households.length > 1 ? (
-            <Group gap="sm" align="stretch" wrap="nowrap">
-              {households.map((h) => (
-                <RtaCard key={h} label={h} amount={rtaByHh.get(h) ?? 0} currency={currency} />
-              ))}
-              <RtaCard label="Total" amount={rtaTotal} currency={currency} emphasis />
-            </Group>
-          ) : (
-            <Stack gap={0} align="flex-end">
-              <Text size="xs" tt="uppercase" fw={700} style={{ opacity: 0.85 }}>Ready to Assign</Text>
-              <Title order={1} style={{ lineHeight: 1 }}>{money(rtaTotal, currency)}</Title>
-            </Stack>
-          )}
+          <Stack gap={0} align="flex-end">
+            <Text size="xs" tt="uppercase" fw={700} style={{ opacity: 0.85 }}>Ready to Assign</Text>
+            <Tooltip
+              disabled={households.length < 2}
+              withArrow
+              multiline
+              label={
+                <Stack gap={2}>
+                  {households.map((h) => (
+                    <Group key={h} gap="lg" justify="space-between" wrap="nowrap">
+                      <Text size="xs">{h}</Text>
+                      <Text size="xs" fw={700}>{money(rtaByHh.get(h) ?? 0, currency)}</Text>
+                    </Group>
+                  ))}
+                </Stack>
+              }
+            >
+              <Title order={1} style={{ lineHeight: 1, cursor: households.length > 1 ? "help" : "default" }}>{money(rtaTotal, currency)}</Title>
+            </Tooltip>
+          </Stack>
         </Group>
       </Paper>
 
@@ -277,37 +284,6 @@ export function PlansView() {
       />
       <MoveMoneyModal opened={moveOpen} onClose={moveCtrl.close} fromCategoryId={moveFrom} />
     </Stack>
-  );
-}
-
-function RtaCard({ label, amount, currency, emphasis }: {
-  label: string;
-  amount: number;
-  currency: ReturnType<typeof useApp>["currency"];
-  emphasis?: boolean;
-}) {
-  const negative = amount < 0;
-  return (
-    <Paper
-      radius="md"
-      px="md"
-      py={6}
-      style={{
-        background: emphasis ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.12)",
-        border: negative ? "1px solid rgba(255,180,180,0.9)" : "1px solid rgba(255,255,255,0.25)",
-        minWidth: 104,
-      }}
-    >
-      <Text size="xs" tt="uppercase" fw={700} style={{ opacity: 0.9, letterSpacing: 0.4 }}>
-        {label}
-      </Text>
-      <Text
-        fw={800}
-        style={{ fontSize: emphasis ? "1.7rem" : "1.45rem", lineHeight: 1.15, color: negative ? "#ffe3e3" : "white" }}
-      >
-        {money(amount, currency)}
-      </Text>
-    </Paper>
   );
 }
 
