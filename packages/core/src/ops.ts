@@ -230,6 +230,11 @@ export function addTransaction(b: LoadedBudget, tx: Transaction): LoadedBudget {
   return { ...b, transactions: [...b.transactions, tx] };
 }
 
+/** Append many transactions at once (e.g. a bank-statement import). */
+export function addTransactions(b: LoadedBudget, txs: readonly Transaction[]): LoadedBudget {
+  return { ...b, transactions: [...b.transactions, ...txs] };
+}
+
 export function updateTransaction(
   b: LoadedBudget,
   txId: Ulid,
