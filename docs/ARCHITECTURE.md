@@ -25,7 +25,7 @@ may not know TypeScript/React — unfamiliar terms are defined inline or in the
 **Why split it this way?**
 
 - **Testability.** `packages/core` has no browser, no framework, no filesystem —
-  so its ~100 tests run in about a second. The tricky money/merge logic is
+  so its 100+ tests run in about a second. The tricky money/merge logic is
   validated here, not through slow, flaky UI tests.
 - **Portability.** The same core could power a different UI (web, mobile,
   command-line) with no changes. The UI is deliberately dumb.
@@ -65,23 +65,36 @@ It's one pure function. The core recurrence, per category per month in order:
 ```
 activity(c, m)  = Σ signed amounts of c's lines whose effectiveDate is in month m
 available(c, m) = available(c, m−1) + assigned(c, m) + activity(c, m)
-readyToAssign(m) = Σ income(≤m) − Σ assigned(≤m)      // income you haven't budgeted yet
 ```
 
-**Credit cards (the subtle part).** When you spend on a credit card in a budgeted
-category, the money you budgeted is *moved* into that card's payment envelope, so
-you always have cash set aside to pay the card. Implemented as: a categorized
-card purchase adds to the payment category's activity (money in), and paying the
-card (a transfer into the card account) subtracts from it (money out). A purchase
-nets to zero across the two envelopes; a payment reduces total available (money
-left to retire debt). This is validated against real exported plan numbers.
+with one twist: an envelope that ends a month **negative restarts at zero** the
+next month (overspending never rolls forward as a red balance — see the
+credit-card paragraph for where the shortfall goes instead).
 
-**Households & Ready-to-Assign.** Each household's Ready-to-Assign is its own
-income + money transferred *into* it from another household − what it assigned.
-The per-household numbers always sum to the global total (there's a test for
-that). Money moved between households (e.g. funding a joint account) counts as
-the receiving household's income, exactly as it did when they were separate
-budgets.
+**Ready-to-Assign is derived by conservation.** Instead of tallying income minus
+assignments, each household's Ready-to-Assign is *the cash it actually holds
+(its non-card account balances) minus everything already sitting in its
+envelopes*. Money can't be counted twice or lost: if you emptied every envelope,
+Ready-to-Assign would equal your account balances exactly. The global banner is
+the sum across households, so banner and breakdown can never disagree. A **cash**
+overspend automatically shows up as reduced Ready-to-Assign (the money left the
+account and no envelope holds it); a **credit** overspend stays as debt on the
+card and doesn't touch it.
+
+**Credit cards (the subtle part).** When you spend on a credit card in a budgeted
+category, the *covered* amount — what the envelope could afford, judged at month
+end so money assigned later in the month still counts — is moved into that card's
+payment envelope, so cash is set aside to pay the card. Whatever the envelope
+couldn't cover remains as debt on the card. A refund on the card draws the
+payment envelope back down, and paying the card (a transfer into the card
+account) draws it down too. Validated to the cent against real exported plan
+numbers: derived activity and available match 100% of category-month cells.
+
+**Households.** Accounts, sections, and categories carry a household label. Each
+household is its own money pool with its own Ready-to-Assign (computed as
+above). Money moving between households stays exactly as the source budgets
+recorded it — a categorized expense on the sending side, income on the receiving
+side — which is what makes each household's number come out right.
 
 **Off-budget accounts.** Tracking accounts (investments) don't affect envelopes;
 their balances are shown but excluded from the budget math. Unapproved
@@ -97,13 +110,12 @@ file so it can be tested in isolation:
 2. **`normalize.ts`** — typed rows: signed integer amounts, ISO dates, trimmed +
    case-folded names for matching, and a `kind` (normal / income / transfer).
 3. **`transactions.ts`** — reconstruct split transactions from their child rows.
-4. **`transfers.ts`** — the crux:
-   - dedupe within-budget transfers (two mirrored rows → one linked pair);
-   - **stitch cross-budget transfers**: money moved between two separate exported
-     budgets is recorded on each side as an ordinary payee, not a transfer. We
-     match those by equal-and-opposite amount within a small date window and
-     collapse them into one transfer — while *excluding* look-alikes (e.g. each
-     budget paying its own bank the same fee on the same day).
+4. **`transfers.ts`** — dedupe within-budget transfers (two mirrored `Transfer :`
+   rows → one linked pair). Money moving *between* budgets is deliberately left
+   exactly as each side recorded it — a categorized expense on the sender, income
+   on the receiver. Collapsing the two sides into one transfer ("stitching") was
+   tried and removed: both budgets end up claiming the same money and
+   Ready-to-Assign collapses to a large negative.
 5. **`categories.ts`** — build one category tree, keeping each household's
    sections separate, and link each credit-card payment category to its card.
 6. **`identity.ts`** — give every row a deterministic content fingerprint plus an
@@ -112,14 +124,15 @@ file so it can be tested in isolation:
 7. **`plan.ts`** — import only the `Assigned` amounts; derive activity/available
    from transactions (importing them would drift after the merge). The export's
    own activity/available become a correctness *oracle* used in testing.
-8. **`reconcile.ts`** — diff a fresh import against what's stored: added /
-   changed / unchanged / deleted, preserving in-app edits.
+8. **`reconcile.ts`** — diff a fresh import against existing transactions: added /
+   changed / unchanged / deleted, preserving in-app edits. (Currently used by the
+   validation scripts and tests; the app's import wizard still *replaces* the
+   budget on commit — wiring reconcile into that path is a planned follow-up.)
 9. **`pipeline.ts`** — runs all stages and produces a staging budget + a report
-   (counts, the transfer-match histogram, unresolved items).
+   (counts, transfer pairs, unresolved items, a net-across-accounts checksum).
 
-The specific matching rules (which payee names link the two budgets) are supplied
-as **config at runtime**, never hardcoded — so no personal data lives in the
-source.
+Concrete names (source labels, household names) are supplied as **config at
+runtime**, never hardcoded — so no personal data lives in the source.
 
 ## Editing: the ops layer (`packages/core/src/ops.ts`)
 
@@ -134,8 +147,8 @@ op, not by clicking around.
 
 The core never calls the filesystem. It depends on a **`FileSystemPort`**
 interface (read/write/list/remove text files). Tests inject an in-memory
-implementation; the desktop app injects a disk-backed one (via Tauri, still to be
-wired). On-disk layout under one data folder:
+implementation; the desktop app injects a disk-backed one built on Tauri's Rust
+commands. On-disk layout under one data folder:
 
 ```
 app.json                         index of budgets
@@ -154,23 +167,28 @@ so the whole folder can be relocated.
 
 One store holds the current `LoadedBudget`. On any change it recomputes the
 projection with `computeProjection` (memoized) and re-renders. Components read
-from the store and call ops. For the preview, the store is seeded with a
-synthetic demo budget (`demo.ts`) so the UI renders without any real data.
+from the store and call ops. In the desktop app changes are saved to disk with a
+short debounce; saves are serialized (never overlapping) and flushed before the
+window closes. In a plain browser the store is seeded with a synthetic demo
+budget (`demo.ts`) so the UI renders without any real data or persistence.
 
 ## Testing
 
 - **Unit + property tests** in `packages/core` (money round-trips, the envelope
   recurrence, money conservation, import idempotency, every op).
 - **Synthetic fixtures first** for the merge — one for each real-world oddity
-  (splits, mirrored transfers, near-duplicates, cross-budget ambiguity,
-  whitespace/case collisions, future-dated rows) — then validated against real
-  data using the export's plan numbers as an oracle.
+  (splits, mirrored transfers, near-duplicates, whitespace/case collisions,
+  future-dated rows) — then validated against real data using the export's plan
+  numbers as an oracle (derived activity and available match 100% of
+  category-month cells).
 - Run with `npm test`. The UI is intentionally thin, so it has no heavy test
   suite; its behavior is the ops layer it calls.
 
 ## Where things will go next
 
-- `apps/desktop/src-tauri/` — the Rust commands (atomic IO, file dialog, unzip)
-  and a `FileSystemPort` implementation over them.
-- An import-wizard feature under `apps/desktop/src/features/import/`.
-- An analytics feature; the data model already captures what it needs.
+- **Edit-preserving re-import** — wire `reconcile.ts` into the import wizard's
+  commit so dropping in a fresh export merges instead of replacing.
+- **Analytics** — currently a placeholder route; the data model already captures
+  what it needs.
+- **Sync** — the deterministic, relocatable file layout is designed to drop into
+  a synced folder later.

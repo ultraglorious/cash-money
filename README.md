@@ -8,7 +8,8 @@ category, and the app tracks what you planned vs. what you actually spent.
 
 It can also **import and merge** budgets exported as CSV — including combining two
 separate exported budgets (e.g. a personal one and a shared/household one) into a
-single budget, automatically reconstructing the transfers between them.
+single budget, with each kept as its own "household" that keeps its own
+accounting and its own Ready-to-Assign.
 
 > **New to this stack?** This project is TypeScript + React + Tauri. If you can
 > program but haven't used these, read [Language & tooling primer](#language--tooling-primer)
@@ -31,9 +32,8 @@ single budget, automatically reconstructing the transfers between them.
   changes nothing).
 - **Analytics** — a placeholder for now.
 
-The budgeting logic is done and thoroughly tested. The desktop app currently runs
-on **demo data**; wiring it to load/save your real data on disk (and an import
-wizard) is the next milestone — see [Status](#status).
+The budgeting logic is done and thoroughly tested, and the desktop app loads and
+saves your real data on disk. See [Status](#status) for what's not built yet.
 
 ---
 
@@ -94,19 +94,28 @@ Only one dev server can run at a time (the port is fixed for Tauri). If you see
 ## Key concepts
 
 - **Envelope budgeting.** Every unit of income is assigned ("budgeted") into a
-  category envelope. `Available = Available(last month) + Assigned + Activity`.
-  "Ready to Assign" is income you haven't put into an envelope yet.
+  category envelope. `Available = Available(last month) + Assigned + Activity`,
+  and an envelope that ends a month overspent restarts at zero (the shortfall
+  comes out of Ready-to-Assign if it was cash, or stays as card debt if it was
+  credit).
+- **Ready-to-Assign by conservation.** Each household's Ready-to-Assign is the
+  cash in its accounts minus everything already sitting in its envelopes — so
+  money can never be counted twice, and unassigning everything would exactly
+  equal your account balances.
 - **Households.** Accounts and categories carry a label (e.g. `Personal`,
-  `Joint`) so the Plan can show each household's envelopes and its own
-  Ready-to-Assign, even though it's one merged budget. Money moved *between*
-  households (a transfer) funds the receiving household.
-- **Credit cards.** Spending on a card moves the budgeted money into that card's
-  "payment" envelope, so you always have money set aside to pay it off. Paying
-  the card draws that envelope back down.
+  `Joint`) so the Plan shows each household's envelopes and its own
+  Ready-to-Assign, even though it's one merged budget. Money moved between
+  households stays as recorded: an expense on the sending side, income on the
+  receiving side.
+- **Credit cards.** Spending on a card moves the *covered* part of the purchase
+  (what the envelope could afford that month) into the card's "payment"
+  envelope, so money is set aside to pay it off; anything uncovered stays as
+  debt on the card. Paying the card draws the payment envelope back down.
 - **Import is idempotent.** Because the exported files have no stable IDs, each
-  row gets a deterministic content fingerprint. Re-importing recognizes rows it
-  already has, so you can drop in a fresh export any time and only real changes
-  apply — your in-app edits are preserved.
+  row gets a deterministic content fingerprint, so importing the same export
+  twice changes nothing. (Note: committing an import currently *replaces* the
+  budget — merging a fresh export into an edited budget is planned; the
+  reconcile machinery for it already exists.)
 
 ---
 
