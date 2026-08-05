@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import { epochDay } from "../time.js";
 import { fold } from "./normalize.js";
 import type { StagedTxn, StagedKind } from "./staged.js";
-import type { StitchRule } from "./config.js";
-import { dedupeWithinTransfers, stitchCrossBudget } from "./transfers.js";
+import { dedupeWithinTransfers } from "./transfers.js";
 
 let rowSeq = 1;
 function st(o: {
@@ -78,81 +77,19 @@ describe("dedupeWithinTransfers", () => {
   });
 });
 
-const RULE: StitchRule = {
-  aSourceKey: "a",
-  aLinkPayee: "Joint Account",
-  bSourceKey: "b",
-  bLinkPayee: "Me",
-  windowDays: 3,
-};
-
-describe("stitchCrossBudget", () => {
-  it("matches an equal-and-opposite pair on the same date and links them", () => {
+describe("cross-budget rows are never stitched", () => {
+  it("keeps equal-and-opposite cross-budget rows as ordinary transactions", () => {
+    // The funding pattern: an outflow in one budget, income in the other. These
+    // must stay exactly as recorded — collapsing them into one transfer makes
+    // both budgets claim the same money and wrecks Ready-to-Assign.
     const staged = [
       st({ sourceKey: "a", account: "Checking", date: "2026-07-31", payee: "Joint Account", amount: -350000 }),
       st({ sourceKey: "b", account: "Joint", date: "2026-07-31", payee: "Me", amount: 350000, kind: "income" }),
     ];
-    const r = stitchCrossBudget(staged, [RULE]);
-    expect(r.matched).toBe(1);
-    expect(r.unmatched).toBe(0);
-    expect(staged[0]!.kind).toBe("transfer");
-    expect(staged[1]!.kind).toBe("transfer"); // income leg is no longer income
-    expect(staged[0]!.transfer!.pairId).toBe(staged[1]!.transfer!.pairId);
-    expect(staged[0]!.transfer!.counterAccount).toBe("Joint");
-    expect(staged[1]!.transfer!.counterAccount).toBe("Checking");
-    expect(r.deltaHistogram[0]).toBe(1);
-  });
-
-  it("matches within the date window but not beyond it", () => {
-    const near = [
-      st({ sourceKey: "a", account: "Chk", date: "2026-06-01", payee: "Joint Account", amount: -350000 }),
-      st({ sourceKey: "b", account: "Jnt", date: "2026-05-30", payee: "Me", amount: 350000, kind: "income" }),
-    ];
-    expect(stitchCrossBudget(near, [RULE]).matched).toBe(1);
-
-    const far = [
-      st({ sourceKey: "a", account: "Chk", date: "2026-01-01", payee: "Joint Account", amount: -50000 }),
-      st({ sourceKey: "b", account: "Jnt", date: "2026-01-10", payee: "Me", amount: 50000, kind: "income" }),
-    ];
-    const r = stitchCrossBudget(far, [RULE]);
-    expect(r.matched).toBe(0);
-    expect(r.unmatched).toBe(2); // both left as ordinary txns
-  });
-
-  it("resolves repeated identical amounts by nearest date (mutual exclusion)", () => {
-    const staged = [
-      st({ sourceKey: "a", account: "Chk", date: "2026-06-27", payee: "Joint Account", amount: -350000 }),
-      st({ sourceKey: "a", account: "Chk", date: "2026-07-31", payee: "Joint Account", amount: -350000 }),
-      st({ sourceKey: "b", account: "Jnt", date: "2026-07-31", payee: "Me", amount: 350000, kind: "income" }),
-      st({ sourceKey: "b", account: "Jnt", date: "2026-06-27", payee: "Me", amount: 350000, kind: "income" }),
-    ];
-    const r = stitchCrossBudget(staged, [RULE]);
-    expect(r.matched).toBe(2);
-    // June A pairs with June B; July A pairs with July B (nearest date).
-    const june = staged.find((s) => s.sourceKey === "a" && s.date === "2026-06-27")!;
-    const juneB = staged.find((s) => s.sourceKey === "b" && s.date === "2026-06-27")!;
-    expect(june.transfer!.pairId).toBe(juneB.transfer!.pairId);
-  });
-
-  it("never stitches payees not named by a rule (false-positive guard)", () => {
-    const staged = [
-      // Both budgets pay their own bank the same amount on the same day.
-      st({ sourceKey: "a", account: "Chk", date: "2026-08-10", payee: "Acme Bank", amount: -100 }),
-      st({ sourceKey: "b", account: "Jnt", date: "2026-08-10", payee: "Acme Bank", amount: 100 }),
-    ];
-    const r = stitchCrossBudget(staged, [RULE]);
-    expect(r.matched).toBe(0);
+    dedupeWithinTransfers(staged);
     expect(staged[0]!.kind).toBe("normal");
-    expect(staged[1]!.kind).toBe("normal");
-  });
-
-  it("leaves a one-sided cross candidate as an ordinary transaction", () => {
-    const staged = [
-      st({ sourceKey: "b", account: "Jnt", date: "2026-03-03", payee: "Me", amount: 350000, kind: "income" }),
-    ];
-    const r = stitchCrossBudget(staged, [RULE]);
-    expect(r.matched).toBe(0);
-    expect(r.unmatched).toBe(1);
-    expect(staged[0]!.kind).toBe("income"); // still income, not a half-transfer
+    expect(staged[1]!.kind).toBe("income");
+    expect(staged[0]!.transfer).toBeUndefined();
+    expect(staged[1]!.transfer).toBeUndefined();
   });
 });

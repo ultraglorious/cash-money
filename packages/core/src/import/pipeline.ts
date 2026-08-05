@@ -32,7 +32,7 @@ export interface ImportReport {
   unapproved: number;
   unresolvedAccounts: number;
   unresolvedCategories: number;
-  /** Net signed balance across all accounts (must be unchanged by stitching). */
+  /** Net signed balance across all accounts (an integrity checksum). */
   netAcrossAccounts: Cents;
   warnings: string[];
 }
@@ -81,7 +81,7 @@ export function stageImport(
     });
   }
 
-  const transfers = reconstructTransfers(staged, config.stitchRules);
+  const transfers = reconstructTransfers(staged);
   const accounts = buildAccounts(staged, config);
   const categories = buildCategories(staged, plan, config, accounts);
   const resolved = resolveTransactions(staged, accounts, categories, config);

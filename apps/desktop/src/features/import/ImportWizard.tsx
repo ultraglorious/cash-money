@@ -87,10 +87,6 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
         budgetName: app.budget.budget.name,
         exportDate: sources[0]?.exportDate ?? today(),
         sources: sources.map((s) => ({ sourceKey: s.sourceKey, label: s.household, household: s.household })),
-        // Cross-budget movements are kept as-is (income on one side, a categorised
-        // expense on the other). "Stitching" them into a single transfer double-counts
-        // the funding and wrecks Ready-to-Assign, so it is intentionally not offered.
-        stitchRules: [],
         trackingAccountHints: ["investment", "etf", "etc", "shares", "deposit"],
       };
       const inputs = sources.map((s) => ({ sourceKey: s.sourceKey, registerCsv: s.register, planCsv: s.plan }));

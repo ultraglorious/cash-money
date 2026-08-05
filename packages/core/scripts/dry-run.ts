@@ -3,7 +3,7 @@
  *
  * Reads the export ZIPs and a runtime config (kept OUT of the repo — it names
  * real payees/accounts), runs the full pipeline WITHOUT persisting, then:
- *   1. prints the import report (counts, stitch histogram, net across accounts);
+ *   1. prints the import report (counts, net across accounts);
  *   2. compares the engine's derived activity/available per (category, month)
  *      against the exported plan numbers (the oracle), summarizing mismatches;
  *   3. re-runs the import and reconciles it to prove idempotency.
@@ -69,8 +69,6 @@ function main(): void {
   log(`- Accounts: ${report.accounts}; groups: ${report.groups}; categories: ${report.categories}; card links: ${report.creditCardLinks}`);
   log(`- Assignments (non-zero): ${report.assignments}; splits reconstructed: ${report.splitsReconstructed}`);
   log(`- Within-budget transfer pairs: ${report.transfers.withinPairs} (unpaired: ${report.transfers.withinUnpaired})`);
-  log(`- Cross-budget stitched: ${report.transfers.crossMatched}; unmatched (left as txns): ${report.transfers.crossUnmatched}`);
-  log(`- Cross-budget Δdays histogram: ${JSON.stringify(report.transfers.crossDeltaHistogram)}`);
   log(`- Net across accounts (approved): ${euro(report.netAcrossAccounts)}`);
   log(`- Unresolved accounts: ${report.unresolvedAccounts}; unresolved categories: ${report.unresolvedCategories}`);
   if (report.warnings.length) {
@@ -123,7 +121,7 @@ function main(): void {
 
   writeFileSync(outFile, lines.join("\n") + "\n", "utf-8");
   console.log(`Transactions: ${report.transactions}, accounts: ${report.accounts}, categories: ${report.categories}`);
-  console.log(`Cross-stitched: ${report.transfers.crossMatched}, net: ${euro(report.netAcrossAccounts)}`);
+  console.log(`Net across accounts: ${euro(report.netAcrossAccounts)}`);
   console.log(`Oracle activity match: ${pct(activityMatch, cells)}, available: ${pct(availableMatch, cells)}`);
   console.log(`Idempotent: ${rec.report.added === 0 && rec.report.changed === 0 && rec.report.deleted === 0}`);
   console.log(`Report: ${outFile}`);

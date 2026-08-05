@@ -17,26 +17,11 @@ export interface SourceConfig {
   household: string;
 }
 
-/**
- * Declares that money moving between two sources is recorded on each side as a
- * plain payee (not an in-app transfer). Rows are paired by equal absolute amount
- * and nearest date within `windowDays`, then collapsed into one transfer.
- */
-export interface StitchRule {
-  aSourceKey: string;
-  /** Payee (matched case-insensitively) in source A that names the counterpart. */
-  aLinkPayee: string;
-  bSourceKey: string;
-  bLinkPayee: string;
-  windowDays: number;
-}
-
 export interface ImportConfig {
   currency: CurrencyConfig;
   /** Name for the merged budget. */
   budgetName?: string;
   sources: SourceConfig[];
-  stitchRules: StitchRule[];
   /** "as of" date from the export; rows dated after this import as unapproved. */
   exportDate: ISODate;
   /** Optional account-name → type overrides; otherwise inferred from the name. */
