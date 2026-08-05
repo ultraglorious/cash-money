@@ -6,15 +6,6 @@ import type { NormPlan } from "./normalize.js";
 import type { StagedTxn } from "./staged.js";
 
 const SEP = "␟";
-const HIDDEN_GROUP_FOLD = "hidden categories";
-const INCOME_GROUP_FOLD = "inflow";
-const CC_GROUP_FOLD = "credit card payments";
-
-function groupKindOf(groupFold: string): CategoryGroupKind {
-  if (groupFold === INCOME_GROUP_FOLD) return "income";
-  if (groupFold === CC_GROUP_FOLD) return "creditCardPayments";
-  return "normal";
-}
 
 interface GroupSeed {
   household: string;
@@ -35,15 +26,15 @@ export interface CategoriesResult {
   groups: CategoryGroup[];
   categories: Category[];
   resolveCategory(household: string, groupFold: string, categoryFold: string): Ulid | undefined;
-  resolveIncome(household: string): Ulid | undefined;
   report: { groupsCreated: number; categoriesCreated: number; creditCardLinks: number };
 }
 
 /**
  * Builds the unified category tree. Same-named groups from different households
- * are kept separate (tagged by household); "Hidden Categories" becomes a hidden
- * flag; the income group hosts the inflow bucket; and each credit-card payment
- * category is linked to its card account via the category's linkedAccountId.
+ * are kept separate (tagged by household). Group kind and hiddenness come from
+ * the semantics stamps set at normalize time — no format vocabulary lives here.
+ * Each credit-card payment category is linked to its card account via the
+ * category's linkedAccountId.
  */
 export function buildCategories(
   staged: readonly StagedTxn[],
@@ -61,30 +52,30 @@ export function buildCategories(
   const groupSeeds = new Map<string, GroupSeed>();
   const catSeeds = new Map<string, CatSeed>();
 
-  const noteGroup = (household: string, groupFold: string, name: string): void => {
+  const noteGroup = (
+    household: string,
+    groupFold: string,
+    name: string,
+    kind: CategoryGroupKind,
+    hidden: boolean,
+  ): void => {
     if (!groupFold) return;
     const key = household + SEP + groupFold;
     if (!groupSeeds.has(key)) {
-      groupSeeds.set(key, {
-        household,
-        groupFold,
-        name,
-        kind: groupKindOf(groupFold),
-        hidden: groupFold === HIDDEN_GROUP_FOLD,
-      });
+      groupSeeds.set(key, { household, groupFold, name, kind, hidden });
     }
   };
-  const noteCat = (household: string, groupFold: string, catFold: string, name: string): void => {
+  const noteCat = (
+    household: string,
+    groupFold: string,
+    catFold: string,
+    name: string,
+    hidden: boolean,
+  ): void => {
     if (!groupFold || !catFold) return;
     const key = household + SEP + groupFold + SEP + catFold;
     if (!catSeeds.has(key)) {
-      catSeeds.set(key, {
-        household,
-        groupFold,
-        categoryFold: catFold,
-        name,
-        hidden: groupFold === HIDDEN_GROUP_FOLD,
-      });
+      catSeeds.set(key, { household, groupFold, categoryFold: catFold, name, hidden });
     }
   };
 
@@ -92,15 +83,15 @@ export function buildCategories(
   for (const t of staged) {
     const household = householdOf.get(t.sourceKey) ?? t.sourceKey;
     for (const line of t.lines) {
-      noteGroup(household, line.groupFold, line.group);
-      noteCat(household, line.groupFold, line.categoryFold, line.category);
+      noteGroup(household, line.groupFold, line.group, line.groupKind ?? "normal", line.groupHidden ?? false);
+      noteCat(household, line.groupFold, line.categoryFold, line.category, line.groupHidden ?? false);
     }
   }
   // ... and from the plan grid (dense: every category × month).
   for (const p of plan) {
     const household = householdOf.get(p.sourceKey) ?? p.sourceKey;
-    noteGroup(household, p.groupFold, p.group);
-    noteCat(household, p.groupFold, p.categoryFold, p.category);
+    noteGroup(household, p.groupFold, p.group, p.groupKind ?? "normal", p.groupHidden ?? false);
+    noteCat(household, p.groupFold, p.categoryFold, p.category, p.groupHidden ?? false);
   }
 
   // Materialize groups.
@@ -134,7 +125,7 @@ export function buildCategories(
 
     // Link credit-card payment categories to their card account.
     let linkedAccountId: Ulid | undefined;
-    if (groupKindOf(s.groupFold) === "creditCardPayments") {
+    if (groupSeeds.get(s.household + SEP + s.groupFold)?.kind === "creditCardPayments") {
       for (const sourceKey of sourcesByHousehold.get(s.household) ?? []) {
         const acc = accounts.resolve(sourceKey, s.categoryFold);
         if (acc) {
@@ -177,7 +168,6 @@ export function buildCategories(
     categories,
     resolveCategory: (household, groupFold, categoryFold) =>
       catIdByKey.get(catKey(household, groupFold, categoryFold)),
-    resolveIncome: (household) => catIdByKey.get(catKey(household, INCOME_GROUP_FOLD, "ready to assign")),
     report: {
       groupsCreated: groups.length,
       categoriesCreated: categories.length,

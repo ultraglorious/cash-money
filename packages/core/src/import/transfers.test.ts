@@ -14,7 +14,10 @@ function st(o: {
   kind?: StagedKind;
 }): StagedTxn {
   const kind = o.kind ?? "normal";
+  // Mirror the parser: a within-transfer leg carries its counterpart's name.
+  const counter = kind === "withinTransfer" ? o.payee.replace(/^transfer\s*:/i, "").trim() : undefined;
   return {
+    ...(counter ? { counterAccount: counter, counterAccountFold: fold(counter) } : {}),
     sourceKey: o.sourceKey,
     account: o.account,
     accountFold: fold(o.account),

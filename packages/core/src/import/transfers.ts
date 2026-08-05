@@ -1,5 +1,4 @@
 import { fingerprint } from "../ids.js";
-import { fold } from "./normalize.js";
 import type { StagedTxn } from "./staged.js";
 
 /**
@@ -22,10 +21,6 @@ export interface TransferReport {
   withinPairs: number;
   /** Within-budget transfer legs that couldn't be paired (kept one-sided). */
   withinUnpaired: number;
-}
-
-function counterFromPayee(payee: string): string {
-  return payee.replace(/^transfer\s*:/i, "").trim();
 }
 
 function linkLegs(a: StagedTxn, b: StagedTxn, prefix: string): void {
@@ -58,7 +53,9 @@ export function dedupeWithinTransfers(staged: StagedTxn[]): {
   const legs = staged.filter((t) => t.kind === "withinTransfer");
   const groups = new Map<string, StagedTxn[]>();
   for (const leg of legs) {
-    const counter = fold(counterFromPayee(leg.payee));
+    // The counterpart account name is stamped on the leg by the parser
+    // (format-specific recognition happens there, never here).
+    const counter = leg.counterAccountFold ?? "";
     const accounts = [leg.accountFold, counter].sort().join("~");
     const key = `${leg.sourceKey}|${leg.date}|${accounts}|${Math.abs(leg.amount)}`;
     (groups.get(key) ?? groups.set(key, []).get(key)!).push(leg);
@@ -74,15 +71,14 @@ export function dedupeWithinTransfers(staged: StagedTxn[]): {
       linkLegs(outs[i]!, ins[i]!, "PAIR");
       pairs++;
     }
-    // Leftover one-sided legs: keep as a transfer leg with the payee-named counter.
+    // Leftover one-sided legs: keep as a transfer leg with the stamped counter.
     for (const leg of [...outs.slice(n), ...ins.slice(n)]) {
       leg.kind = "transfer";
       leg.lines = [];
-      const counter = counterFromPayee(leg.payee);
       leg.transfer = {
         counterSourceKey: leg.sourceKey,
-        counterAccount: counter,
-        counterAccountFold: fold(counter),
+        counterAccount: leg.counterAccount ?? "",
+        counterAccountFold: leg.counterAccountFold ?? "",
         pairId: fingerprint(["PAIR-ORPHAN", leg.sourceKey, leg.sourceRows.join(",")]),
       };
       leg.warnings = [...(leg.warnings ?? []), "unpaired within-budget transfer leg"];

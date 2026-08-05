@@ -1,5 +1,6 @@
 import type { NormTxn } from "./normalize.js";
 import type { StagedLine, StagedTxn } from "./staged.js";
+import { fold } from "./text.js";
 
 /**
  * Builds staged transactions from normalized rows, reconstructing split
@@ -48,6 +49,8 @@ function lineOf(r: NormTxn): StagedLine {
     groupFold: r.groupFold,
     category: r.category,
     categoryFold: r.categoryFold,
+    groupKind: r.groupKind,
+    groupHidden: r.groupHidden,
     amount: r.amount,
     memo: r.memo,
     isIncome: r.kind === "income",
@@ -72,6 +75,7 @@ function makeSimple(r: NormTxn): StagedTxn {
     flag: r.flag,
     kind: r.kind === "withinTransfer" ? "withinTransfer" : r.kind,
     lines,
+    ...(r.counterAccount ? { counterAccount: r.counterAccount, counterAccountFold: fold(r.counterAccount) } : {}),
     sourceRows: [r.sourceRow],
   };
 }
