@@ -27,7 +27,6 @@ import { isTauri, readZipCsvs } from "../../platform/tauriFs";
 interface SourceDraft {
   path: string;
   sourceKey: string;
-  label: string;
   household: string;
   register: string;
   plan: string;
@@ -79,8 +78,8 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
         const register = members.find((m) => /register\.csv$/i.test(m.name))?.content ?? "";
         const plan = members.find((m) => /plan\.csv$/i.test(m.name))?.content ?? "";
         const base = path.split(/[/\\]/).pop()!.replace(/\.zip$/i, "");
-        const label = base.replace(/\s*as of.*$/i, "").trim() || base;
-        drafts.push({ path, sourceKey: `${slug(label)}-${sources.length + i}`, label, household: label, register, plan, exportDate: parseAsOf(base) });
+        const household = base.replace(/\s*as of.*$/i, "").trim() || base;
+        drafts.push({ path, sourceKey: `${slug(household)}-${sources.length + i}`, household, register, plan, exportDate: parseAsOf(base) });
       }
       setSources((s) => [...s, ...drafts]);
       setResult(null);
@@ -105,7 +104,7 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
         currency: app.currency,
         budgetName: app.budget.budget.name,
         exportDate: sources[0]?.exportDate ?? today(),
-        sources: sources.map((s) => ({ sourceKey: s.sourceKey, label: s.label, household: s.household })),
+        sources: sources.map((s) => ({ sourceKey: s.sourceKey, label: s.household, household: s.household })),
         stitchRules: rules
           .filter((r) => r.aSourceKey && r.bSourceKey && r.aLinkPayee.trim() && r.bLinkPayee.trim())
           .map((r) => ({ aSourceKey: r.aSourceKey, aLinkPayee: r.aLinkPayee.trim(), bSourceKey: r.bSourceKey, bLinkPayee: r.bLinkPayee.trim(), windowDays: r.windowDays })),
@@ -126,7 +125,7 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
     close();
   };
 
-  const sourceOptions = sources.map((s) => ({ value: s.sourceKey, label: s.label }));
+  const sourceOptions = sources.map((s) => ({ value: s.sourceKey, label: s.household }));
 
   return (
     <Modal opened={opened} onClose={close} title="Import budget export" size="xl" centered>
@@ -150,12 +149,15 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
 
         {sources.length > 0 && (
           <>
+            <Text size="xs" c="dimmed">
+              Each file becomes its own <b>household</b> — a separate section in the Plan with its own Ready-to-Assign
+              (e.g. “Personal”, “Joint”). Give the two files different household names to keep them apart.
+            </Text>
             <Table>
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th>File</Table.Th>
-                  <Table.Th>Label</Table.Th>
-                  <Table.Th>Household</Table.Th>
+                  <Table.Th>Household (its own section in the Plan)</Table.Th>
                   <Table.Th w={40} />
                 </Table.Tr>
               </Table.Thead>
@@ -163,7 +165,6 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
                 {sources.map((s) => (
                   <Table.Tr key={s.sourceKey}>
                     <Table.Td><Text size="sm" lineClamp={1}>{s.path.split(/[/\\]/).pop()}</Text></Table.Td>
-                    <Table.Td><TextInput size="xs" value={s.label} onChange={(e) => updateSource(s.sourceKey, { label: e.currentTarget.value })} /></Table.Td>
                     <Table.Td><TextInput size="xs" value={s.household} onChange={(e) => updateSource(s.sourceKey, { household: e.currentTarget.value })} /></Table.Td>
                     <Table.Td><ActionIcon variant="subtle" color="red" onClick={() => removeSource(s.sourceKey)} aria-label="Remove"><IconTrash size={15} /></ActionIcon></Table.Td>
                   </Table.Tr>
