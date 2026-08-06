@@ -71,6 +71,13 @@ export interface RegisterFormat {
   transfer?: TransferMapping;
   /** Regex over the memo with (n)(m) groups; enables split-run reconstruction. */
   splitMemoPattern?: string;
+  /**
+   * Some banks book a card purchase days after it happened but embed the TRUE
+   * transaction date in the description. A regex over the memo cell whose
+   * capture group 1 is that date; when it matches, it replaces the date-column
+   * value (which is kept as `bookDate`). Rows without a match keep the column.
+   */
+  trueDate?: { pattern: string; format: ImportDateFormat };
   semantics?: FormatSemantics;
   /**
    * Packaging hint for the wizard: "zip-register-plan" formats arrive as a zip
@@ -126,6 +133,9 @@ export const RegisterFormatSchema: z.ZodType<RegisterFormat> = z.object({
     ])
     .optional(),
   splitMemoPattern: regexString.optional(),
+  trueDate: z
+    .object({ pattern: regexString, format: z.enum(["iso", "dmy", "mdy"]) })
+    .optional(),
   semantics: z
     .object({
       incomeGroup: nonEmpty.optional(),

@@ -1,6 +1,4 @@
-import type { Ulid } from "../ids.js";
 import type { Transaction } from "../model/types.js";
-import { SEP, fold } from "./text.js";
 
 /**
  * Reconciles a freshly-staged transaction set against what's already stored,
@@ -101,78 +99,4 @@ export function reconcileTransactions(
   }
 
   return { merged, report: { added, changed, unchanged, deleted } };
-}
-
-// ---- Statement merge ---------------------------------------------------------
-
-export interface StatementMergeReport {
-  added: number;
-  /** Incoming rows already present by content identity (left untouched). */
-  matched: number;
-  /** Incoming rows matched to provenance-less rows by content (adopted). */
-  legacyMatched: number;
-}
-
-/**
- * Merge a statement's transactions into the existing set. DELIBERATELY not
- * `reconcileTransactions`: that models an authoritative snapshot (staged wins,
- * vanished rows are deletions). A statement is an append-only window of
- * actuals, so the rules here are the opposite —
- *
- *   - identity match: KEEP the existing row untouched (except a refreshed
- *     last-seen timestamp) — the user may have categorized/split it in-app;
- *   - no identity match, but a provenance-less row in the same account has the
- *     same date+amount+payee+memo: adopt the incoming provenance onto it (rows
- *     imported through the pre-identity bank path are matched, not duplicated;
- *     future imports then identity-match). Each legacy row is consumed once;
- *   - otherwise: add;
- *   - NEVER delete — an overlapping or partial statement says nothing about
- *     rows outside its window.
- */
-export function mergeStatement(
-  existing: readonly Transaction[],
-  incoming: readonly Transaction[],
-  accountId: Ulid,
-): { merged: Transaction[]; report: StatementMergeReport } {
-  const byIdentity = new Map<string, number>();
-  const legacyByContent = new Map<string, number[]>();
-  existing.forEach((t, i) => {
-    if (t.source?.identity) {
-      byIdentity.set(t.source.identity, i);
-    } else if (t.accountId === accountId) {
-      const key = [t.date, t.amount, fold(t.payee), fold(t.memo)].join(SEP);
-      (legacyByContent.get(key) ?? legacyByContent.set(key, []).get(key)!).push(i);
-    }
-  });
-
-  const merged = [...existing];
-  let added = 0;
-  let matched = 0;
-  let legacyMatched = 0;
-
-  for (const inc of incoming) {
-    const identity = inc.source?.identity;
-    const exIdx = identity ? byIdentity.get(identity) : undefined;
-    if (exIdx !== undefined) {
-      matched++;
-      const ex = merged[exIdx]!;
-      if (ex.source && inc.source && inc.source.lastSeenExportTs > ex.source.lastSeenExportTs) {
-        merged[exIdx] = { ...ex, source: { ...ex.source, lastSeenExportTs: inc.source.lastSeenExportTs } };
-      }
-      continue;
-    }
-    const key = [inc.date, inc.amount, fold(inc.payee), fold(inc.memo)].join(SEP);
-    const legacyIdx = legacyByContent.get(key)?.shift();
-    if (legacyIdx !== undefined) {
-      legacyMatched++;
-      // Adopt the provenance so the next import identity-matches this row, but
-      // keep everything the user may have edited (category, splits, memo case).
-      merged[legacyIdx] = { ...merged[legacyIdx]!, source: inc.source };
-      continue;
-    }
-    merged.push(inc);
-    added++;
-  }
-
-  return { merged, report: { added, matched, legacyMatched } };
 }

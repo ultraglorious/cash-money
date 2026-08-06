@@ -72,6 +72,8 @@ export interface ImportSourceEntry {
   accountId: Ulid;
   formatId: string;
   sourceKey: string;
+  /** Last time a statement was reconciled into this account (drives recall). */
+  lastUsed?: ISODate;
 }
 
 interface CategoriesFile {

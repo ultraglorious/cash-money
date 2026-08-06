@@ -3,7 +3,7 @@ import { ActionIcon, Autocomplete, Badge, Box, Group, NumberInput, Select, TextI
 import { DatePickerInput } from "@mantine/dates";
 import { useDisclosure } from "@mantine/hooks";
 import { IconCheck, IconMinus, IconPlus, IconX } from "@tabler/icons-react";
-import type { Cents, SplitLine, Transaction, Ulid } from "@cash-money/core";
+import type { Cents, RecurrenceFreq, SplitLine, Transaction, Ulid } from "@cash-money/core";
 import { useApp } from "../../state";
 import { SplitEditorModal } from "./SplitEditorModal";
 import { registerTemplate } from "./layout";
@@ -17,7 +17,18 @@ export interface EditorSubmit {
   amount: Cents;
   cleared: "cleared" | "uncleared" | "reconciled";
   splits?: SplitLine[];
+  /** Present => the transaction repeats on this cadence. */
+  recurrence?: { freq: RecurrenceFreq; anchorDay?: number };
 }
+
+const REPEAT_NONE = "none";
+const REPEAT_OPTIONS = [
+  { value: REPEAT_NONE, label: "No repeat" },
+  { value: "weekly", label: "Weekly" },
+  { value: "biweekly", label: "Every 2 weeks" },
+  { value: "monthly", label: "Monthly" },
+  { value: "yearly", label: "Yearly" },
+];
 
 interface GroupedOption {
   group: string;
@@ -63,6 +74,7 @@ export function EditorRow({
   const [magnitude, setMagnitude] = useState<number | string>(initial ? Math.abs(initial.amount) / 100 : "");
   const [splits, setSplits] = useState<SplitLine[] | null>(null);
   const [splitOpen, splitCtrl] = useDisclosure(false);
+  const [repeat, setRepeat] = useState<string>(initial?.recurrence?.freq ?? REPEAT_NONE);
 
   const signedMagnitude = (): Cents => {
     const cents = Math.round(Number(magnitude || 0) * 100);
@@ -73,7 +85,12 @@ export function EditorRow({
 
   const commit = () => {
     if (!valid || !accountId || !date) return;
-    const base = { accountId: accountId as Ulid, date: toIso(date), payee: payee.trim(), memo: memo.trim(), cleared: initial?.cleared ?? "cleared" };
+    const iso = toIso(date);
+    const recurrence =
+      repeat === REPEAT_NONE
+        ? undefined
+        : { freq: repeat as RecurrenceFreq, anchorDay: Number(iso.slice(8, 10)) };
+    const base = { accountId: accountId as Ulid, date: iso, payee: payee.trim(), memo: memo.trim(), cleared: initial?.cleared ?? "cleared", recurrence };
     if (splits) onSubmit({ ...base, amount: splitTotal, splits });
     else onSubmit({ ...base, amount: signedMagnitude(), ...(categoryId ? { categoryId: categoryId as Ulid } : {}) });
   };
@@ -87,7 +104,16 @@ export function EditorRow({
   };
 
   return (
-    <Box style={{ display: "grid", gridTemplateColumns: registerTemplate(!!single), alignItems: "center", columnGap: 8, padding: "6px 10px", background: "var(--mantine-color-indigo-light)" }}>
+    <Box
+      style={{ display: "grid", gridTemplateColumns: registerTemplate(!!single), alignItems: "center", columnGap: 8, padding: "6px 10px", background: "var(--mantine-color-indigo-light)" }}
+      onKeyDown={(e) => {
+        // Enter anywhere in the row confirms; a combobox that consumed Enter to
+        // pick an option marks the event defaultPrevented, so it won't double-fire.
+        if (e.key === "Enter" && !e.defaultPrevented) commit();
+        if (e.key === "Escape" && !e.defaultPrevented) onCancel();
+      }}
+    >
+      <Box />
       <DatePickerInput size="xs" value={date} onChange={setDate} valueFormat="DD MMM" popoverProps={{ withinPortal: true }} />
       {!single && <Select size="xs" placeholder="Account" data={accountData} value={accountId} onChange={setAccountId} searchable comboboxProps={{ withinPortal: true }} />}
       <Autocomplete size="xs" placeholder="Payee" data={payees} value={payee} onChange={onPayeePick} onOptionSubmit={onPayeePick} comboboxProps={{ withinPortal: true }} />
@@ -123,7 +149,6 @@ export function EditorRow({
         disabled={!!splits}
         value={splits ? Math.abs(splitTotal) / 100 : magnitude}
         onChange={setMagnitude}
-        onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") onCancel(); }}
         styles={{ input: { textAlign: "right" } }}
         leftSection={
           <ActionIcon size="sm" variant="subtle" color={direction === "out" ? "red" : "teal"} onClick={() => setDirection((d) => (d === "out" ? "in" : "out"))} disabled={!!splits} aria-label="Toggle inflow/outflow">
@@ -131,7 +156,15 @@ export function EditorRow({
           </ActionIcon>
         }
       />
-      <Box />
+      <Select
+        size="xs"
+        data={REPEAT_OPTIONS}
+        value={repeat}
+        onChange={(v) => setRepeat(v ?? REPEAT_NONE)}
+        allowDeselect={false}
+        comboboxProps={{ withinPortal: true }}
+        aria-label="Repeat"
+      />
       <Group gap={4} wrap="nowrap">
         <ActionIcon size="sm" color="teal" variant="light" onClick={commit} disabled={!valid} aria-label="Save"><IconCheck size={15} /></ActionIcon>
         <ActionIcon size="sm" color="gray" variant="subtle" onClick={onCancel} aria-label="Cancel"><IconX size={15} /></ActionIcon>

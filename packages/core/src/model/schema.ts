@@ -49,6 +49,7 @@ export const AccountSchema = z.object({
   closed: z.boolean(),
   sortOrder: z.number(),
   household: z.string().optional(),
+  reconciledThrough: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
 export const CategoryGroupSchema = z.object({
@@ -107,6 +108,12 @@ export const TransactionSchema = z.object({
   amount: cents,
   cleared: z.enum(["cleared", "uncleared", "reconciled"]),
   approved: z.boolean(),
+  recurrence: z
+    .object({
+      freq: z.enum(["weekly", "biweekly", "monthly", "yearly"]),
+      anchorDay: z.number().int().min(1).max(31).optional(),
+    })
+    .optional(),
   flag: z.enum(["blue", "green", "purple", "red", "yellow"]).optional(),
   categoryId: ulid.optional(),
   splits: z.array(SplitLineSchema).optional(),

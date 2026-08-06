@@ -1,12 +1,13 @@
 import { newId, type Ulid } from "./ids.js";
 import type { Cents } from "./money.js";
-import type { MonthKey } from "./time.js";
+import { nextOccurrence, type ISODate, type MonthKey } from "./time.js";
 import { computeProjection } from "./engine/compute.js";
 import type {
   Account,
   AccountType,
   Category,
   CategoryGroup,
+  ClearedStatus,
   LoadedBudget,
   MonthlyAssignment,
   SplitLine,
@@ -284,16 +285,93 @@ export function deleteTransaction(b: LoadedBudget, txId: Ulid): LoadedBudget {
   return { ...b, transactions: b.transactions.filter((t) => t.id !== txId) };
 }
 
-export function approveTransaction(b: LoadedBudget, txId: Ulid): LoadedBudget {
-  return updateTransaction(b, txId, { approved: true });
+/**
+ * The next occurrence of a repeating transaction: a fresh scheduled entry one
+ * period later. Identity, provenance, and transfer pairing belong to the
+ * original row only, so none of them carry over; split lines get new ids.
+ */
+export function scheduledSuccessor(t: Transaction): Transaction | null {
+  if (!t.recurrence) return null;
+  const date = nextOccurrence(t.date, t.recurrence.freq, t.recurrence.anchorDay);
+  const { id: _id, source: _source, transfer: _transfer, ...rest } = t;
+  return {
+    ...rest,
+    id: newId(),
+    date,
+    effectiveDate: date,
+    approved: false,
+    cleared: "uncleared",
+    ...(t.splits ? { splits: t.splits.map((s) => ({ ...s, id: newId() })) } : {}),
+  };
 }
 
-/** Approve many scheduled transactions in one pass (one recompute, not N). */
+export function approveTransaction(b: LoadedBudget, txId: Ulid): LoadedBudget {
+  return approveTransactions(b, [txId]);
+}
+
+/**
+ * Approve many scheduled transactions in one pass (one recompute, not N).
+ * An approved row enters the register as `uncleared` — it's now real and
+ * counted, but not yet settled (paid at the bank / on a paid card bill); the
+ * user clears it when it settles. Approving a repeating one also enters its
+ * next occurrence into the schedule.
+ */
 export function approveTransactions(b: LoadedBudget, txIds: readonly Ulid[]): LoadedBudget {
+  const ids = new Set(txIds);
+  const successors: Transaction[] = [];
+  const transactions = b.transactions.map((t) => {
+    if (!ids.has(t.id) || t.approved) return t;
+    const next = scheduledSuccessor(t);
+    if (next) successors.push(next);
+    return { ...t, approved: true, cleared: "uncleared" as const };
+  });
+  return { ...b, transactions: successors.length > 0 ? [...transactions, ...successors] : transactions };
+}
+
+/** Rename every occurrence of a payee across the budget (exact match). */
+export function renamePayee(b: LoadedBudget, from: string, to: string): LoadedBudget {
+  const next = to.trim();
+  if (!next || next === from) return b;
+  return { ...b, transactions: b.transactions.map((t) => (t.payee === from ? { ...t, payee: next } : t)) };
+}
+
+/** Set the cleared status on many transactions in one pass. */
+export function setClearedStatus(b: LoadedBudget, txIds: readonly Ulid[], cleared: ClearedStatus): LoadedBudget {
   const ids = new Set(txIds);
   return {
     ...b,
-    transactions: b.transactions.map((t) => (ids.has(t.id) && !t.approved ? { ...t, approved: true } : t)),
+    transactions: b.transactions.map((t) => (ids.has(t.id) && t.cleared !== cleared ? { ...t, cleared } : t)),
+  };
+}
+
+/** Delete many transactions in one pass. */
+export function deleteTransactions(b: LoadedBudget, txIds: readonly Ulid[]): LoadedBudget {
+  const ids = new Set(txIds);
+  return { ...b, transactions: b.transactions.filter((t) => !ids.has(t.id)) };
+}
+
+/**
+ * Record a statement reconciliation: the bank confirmed these rows, so they
+ * become `reconciled`, and the account remembers the latest confirmed date
+ * (never moving it backwards — an older statement re-run must not regress it).
+ */
+export function reconcileAccount(
+  b: LoadedBudget,
+  accountId: Ulid,
+  txIds: readonly Ulid[],
+  through: ISODate,
+): LoadedBudget {
+  const ids = new Set(txIds);
+  return {
+    ...b,
+    accounts: b.accounts.map((a) =>
+      a.id === accountId && (!a.reconciledThrough || a.reconciledThrough < through)
+        ? { ...a, reconciledThrough: through }
+        : a,
+    ),
+    transactions: b.transactions.map((t) =>
+      ids.has(t.id) && t.cleared !== "reconciled" ? { ...t, cleared: "reconciled" } : t,
+    ),
   };
 }
 

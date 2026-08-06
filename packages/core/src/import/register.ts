@@ -31,17 +31,19 @@ export function parseCsv(text: string): ParsedCsv {
 
 /**
  * Parse a date cell in the declared layout into an ISO date. Accepts `-`, `/`,
- * or `.` separators and 2-digit years (assumed 20xx). Throws on malformed input
- * — callers collect the error per row.
+ * or `.` separators and 2-digit years (assumed 20xx). The date may sit anywhere
+ * inside the cell (some sources embed it in free text — e.g. a description
+ * column mapped as the date); the first date-shaped token wins. Throws on
+ * cells containing no date — callers collect the error per row.
  */
 export function parseDateAs(raw: string, format: ImportDateFormat): ISODate {
   const s = raw.trim();
   if (format === "iso") {
-    const m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s);
+    const m = /(?<!\d)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)/.exec(s);
     if (!m) throw new Error(`Bad ISO date: ${JSON.stringify(raw)}`);
     return `${m[1]}-${pad(m[2]!)}-${pad(m[3]!)}`;
   }
-  const m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/.exec(s);
+  const m = /(?<!\d)(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(?!\d)/.exec(s);
   if (!m) throw new Error(`Bad date: ${JSON.stringify(raw)}`);
   const a = Number(m[1]);
   const b = Number(m[2]);
@@ -64,6 +66,15 @@ export function requireColumns(headers: readonly string[], required: readonly st
   return required.filter((c) => !have.has(c));
 }
 
+/**
+ * Whether a CSV with these headers could be read with this format — every
+ * column the format references exists (the account column excepted: statement
+ * imports pin the account explicitly). Used to recognize a known bank's file.
+ */
+export function formatFitsHeaders(format: RegisterFormat, headers: readonly string[]): boolean {
+  return requireColumns(headers, referencedColumns(format, { fixedAccount: "-" })).length === 0;
+}
+
 // ---- Format-driven row mapping ----------------------------------------------
 
 export type RowKind = "withinTransfer" | "income" | "normal";
@@ -73,6 +84,8 @@ export interface NormTxn {
   account: string;
   accountFold: string;
   date: ISODate;
+  /** The date column's value, when `date` was replaced by an extracted true date. */
+  bookDate?: ISODate;
   epochDay: number;
   /** Whether the transaction is approved (false for future/scheduled rows). */
   approved: boolean;
@@ -114,7 +127,7 @@ export interface MapRegisterResult {
   errors: string[];
 }
 
-function referencedColumns(format: RegisterFormat, opts: MapRegisterOptions): string[] {
+function referencedColumns(format: RegisterFormat, opts: Pick<MapRegisterOptions, "fixedAccount">): string[] {
   const cols = [format.date.column, format.payeeColumn];
   if (format.amount.mode === "signed") cols.push(format.amount.column);
   else cols.push(format.amount.inflowColumn, format.amount.outflowColumn);
@@ -162,6 +175,7 @@ export function mapRegisterRows(
   const transferRe =
     format.transfer?.mode === "payeePattern" ? new RegExp(format.transfer.pattern, "i") : undefined;
   const splitRe = format.splitMemoPattern ? new RegExp(format.splitMemoPattern, "i") : undefined;
+  const trueDateRe = format.trueDate ? new RegExp(format.trueDate.pattern, "i") : undefined;
   const sem = format.semantics;
   const incomeGroupFold = sem?.incomeGroup ? fold(sem.incomeGroup) : undefined;
   const incomeCategoryFold = sem?.incomeCategory ? fold(sem.incomeCategory) : undefined;
@@ -174,7 +188,22 @@ export function mapRegisterRows(
   parsed.rows.forEach((row, i) => {
     const sourceRow = i + 2; // row 1 is the header line
     try {
-      const date = parseDateAs(row[format.date.column] ?? "", format.date.format);
+      const columnDate = parseDateAs(row[format.date.column] ?? "", format.date.format);
+      // True-date extraction: some banks book days late but embed the real
+      // transaction date in the description. On a match, the extracted date
+      // becomes THE date and the column value is kept as bookDate.
+      let date = columnDate;
+      let bookDate: ISODate | undefined;
+      if (trueDateRe && format.memoColumn) {
+        const m = trueDateRe.exec(row[format.memoColumn] ?? "");
+        if (m?.[1]) {
+          const extracted = parseDateAs(m[1], format.trueDate!.format);
+          if (extracted !== columnDate) {
+            date = extracted;
+            bookDate = columnDate;
+          }
+        }
+      }
 
       let amount: number;
       if (format.amount.mode === "signed") {
@@ -239,6 +268,7 @@ export function mapRegisterRows(
         account,
         accountFold: fold(account),
         date,
+        bookDate,
         epochDay: epochDay(date),
         approved: opts.exportDate ? date <= opts.exportDate : true,
         payee,

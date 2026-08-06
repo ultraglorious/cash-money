@@ -55,6 +55,27 @@ export function addMonths(month: MonthKey, delta: number): MonthKey {
   return `${String(year).padStart(4, "0")}-${pad2(mon + 1)}`;
 }
 
+export type RecurrenceFreq = "weekly" | "biweekly" | "monthly" | "yearly";
+
+/**
+ * The next occurrence of a repeating date. Monthly/yearly land on the same day
+ * of month, clamped to the target month's length; `anchorDay` keeps a bill
+ * anchored to its true day (the 31st) instead of drifting after a short month.
+ */
+export function nextOccurrence(date: ISODate, freq: RecurrenceFreq, anchorDay?: number): ISODate {
+  const m = ISO_DATE_RE.exec(date);
+  if (!m) throw new Error(`Not an ISO date: ${JSON.stringify(date)}`);
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (freq === "weekly" || freq === "biweekly") {
+    const t = new Date(Date.UTC(y, mo - 1, d + (freq === "weekly" ? 7 : 14)));
+    return `${t.getUTCFullYear()}-${pad2(t.getUTCMonth() + 1)}-${pad2(t.getUTCDate())}`;
+  }
+  const target = freq === "monthly" ? addMonths(`${m[1]}-${m[2]}`, 1) : addMonths(`${m[1]}-${m[2]}`, 12);
+  const [ty, tm] = target.split("-").map(Number) as [number, number];
+  const lastDay = new Date(Date.UTC(ty, tm, 0)).getUTCDate();
+  return `${target}-${pad2(Math.min(anchorDay ?? d, lastDay))}`;
+}
+
 /** -1 | 0 | 1 ordering of two MonthKeys (they sort lexicographically too). */
 export function compareMonth(a: MonthKey, b: MonthKey): number {
   return a < b ? -1 : a > b ? 1 : 0;

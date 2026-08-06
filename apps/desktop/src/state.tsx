@@ -5,10 +5,12 @@ import {
   computeProjection,
   monthKeyOf,
   newId,
+  nextOccurrence,
   ops,
   type AccountType,
   type Cents,
   type CurrencyConfig,
+  type ImportSourceEntry,
   type LoadedBudget,
   type MonthKey,
   type Projection,
@@ -129,16 +131,27 @@ interface Actions {
   setTransactions: (txs: Transaction[]) => void;
   updateTransaction: (id: Ulid, patch: Partial<Omit<Transaction, "id">>) => void;
   deleteTransaction: (id: Ulid) => void;
+  deleteTransactions: (ids: Ulid[]) => void;
   approveTransaction: (id: Ulid) => void;
   approveTransactions: (ids: Ulid[]) => void;
+  /** Bulk cleared-status change (multi-select "mark cleared/uncleared"). */
+  setClearedStatus: (ids: Ulid[], cleared: "cleared" | "uncleared" | "reconciled") => void;
+  /** Rename every transaction with this exact payee. */
+  renamePayee: (from: string, to: string) => void;
   setSplits: (id: Ulid, splits: SplitLine[] | undefined, categoryIdWhenUnsplit?: Ulid) => void;
+  /** Mark statement-confirmed rows reconciled and advance the account's reconciled-through date. */
+  reconcileAccount: (accountId: Ulid, txIds: Ulid[], through: string) => void;
 
   /** User-saved register formats (empty / no-op in the browser preview). */
   loadFormats: () => Promise<SavedFormat[]>;
   saveFormats: (formats: SavedFormat[]) => Promise<void>;
+  /** Which account was last reconciled with which format (newest first). */
+  listStatementSources: () => Promise<ImportSourceEntry[]>;
   /**
    * The stable statement sourceKey for an account — minted once, persisted,
-   * and reused so re-imported statements identity-match earlier ones.
+   * and reused so re-imported statements identity-match earlier ones. Every
+   * call also records the format used and the date, which is what lets the
+   * wizard recall the right account + mapping next time.
    */
   statementSourceKey: (accountId: Ulid, formatId: string) => Promise<string>;
 }
@@ -279,6 +292,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const t = budgetRef.current?.transactions.find((x) => x.id === id);
       return t ? monthKeyOf(t.date) : undefined;
     };
+    /** Month the next occurrence of a repeating txn will land in, if any. */
+    const successorMonth = (id: Ulid): MonthKey | undefined => {
+      const t = budgetRef.current?.transactions.find((x) => x.id === id);
+      return t?.recurrence && !t.approved
+        ? monthKeyOf(nextOccurrence(t.date, t.recurrence.freq, t.recurrence.anchorDay))
+        : undefined;
+    };
     const markAll = () => mark({ meta: true, accounts: true, categories: true, assignments: true, txAll: true });
 
     return {
@@ -316,22 +336,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
         apply((b) => ops.updateTransaction(b, id, patch));
       },
       deleteTransaction: (id) => { mark({ txMonths: [txMonth(id)] }); apply((b) => ops.deleteTransaction(b, id)); },
-      approveTransaction: (id) => { mark({ txMonths: [txMonth(id)] }); apply((b) => ops.approveTransaction(b, id)); },
-      approveTransactions: (ids) => { mark({ txMonths: ids.map(txMonth) }); apply((b) => ops.approveTransactions(b, ids)); },
+      deleteTransactions: (ids) => { mark({ txMonths: ids.map(txMonth) }); apply((b) => ops.deleteTransactions(b, ids)); },
+      // Approving a repeating txn spawns its next occurrence in a LATER month —
+      // that shard must be marked dirty too or the successor never hits disk.
+      approveTransaction: (id) => { mark({ txMonths: [txMonth(id), successorMonth(id)] }); apply((b) => ops.approveTransaction(b, id)); },
+      approveTransactions: (ids) => { mark({ txMonths: [...ids.map(txMonth), ...ids.map(successorMonth)] }); apply((b) => ops.approveTransactions(b, ids)); },
+      setClearedStatus: (ids, cleared) => { mark({ txMonths: ids.map(txMonth) }); apply((b) => ops.setClearedStatus(b, ids, cleared)); },
+      renamePayee: (from, to) => { mark({ txAll: true }); apply((b) => ops.renamePayee(b, from, to)); },
       setSplits: (id, splits, categoryIdWhenUnsplit) => { mark({ txMonths: [txMonth(id)] }); apply((b) => ops.setSplits(b, id, splits, categoryIdWhenUnsplit)); },
+      reconcileAccount: (accountId, txIds, through) => {
+        mark({ accounts: true, txMonths: txIds.map(txMonth) });
+        apply((b) => ops.reconcileAccount(b, accountId, txIds, through));
+      },
 
       loadFormats: () => repoRef.current?.loadFormats() ?? Promise.resolve([]),
       saveFormats: (formats) => repoRef.current?.saveFormats(formats) ?? Promise.resolve(),
+      listStatementSources: async () => {
+        const repo = repoRef.current;
+        const budgetId = budgetRef.current?.budget.id;
+        if (!repo || !budgetId) return [];
+        const entries = await repo.loadImportSources(budgetId);
+        return [...entries].sort((a, b) => (b.lastUsed ?? "").localeCompare(a.lastUsed ?? ""));
+      },
       statementSourceKey: async (accountId, formatId) => {
         const repo = repoRef.current;
         const budgetId = budgetRef.current?.budget.id;
         // Browser preview: deterministic per-account key, nothing persisted.
         if (!repo || !budgetId) return `stmt:${accountId}`;
         const entries = await repo.loadImportSources(budgetId);
+        const lastUsed = new Date().toISOString().slice(0, 10);
         const existing = entries.find((e) => e.accountId === accountId);
-        if (existing) return existing.sourceKey;
+        if (existing) {
+          await repo.saveImportSources(
+            budgetId,
+            entries.map((e) => (e === existing ? { ...e, formatId, lastUsed } : e)),
+          );
+          return existing.sourceKey;
+        }
         const sourceKey = newId();
-        await repo.saveImportSources(budgetId, [...entries, { accountId, formatId, sourceKey }]);
+        await repo.saveImportSources(budgetId, [...entries, { accountId, formatId, sourceKey, lastUsed }]);
         return sourceKey;
       },
     };
