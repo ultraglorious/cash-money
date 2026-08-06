@@ -124,13 +124,40 @@ export function TransactionsView() {
   );
 
   // ---- Multi-select ----------------------------------------------------------
-  useEffect(() => setSelected(new Set()), [activeAccount]); // a selection never outlives its account view
+  const anchorRef = useRef<Ulid | null>(null);
+  useEffect(() => {
+    setSelected(new Set()); // a selection never outlives its account view
+    anchorRef.current = null;
+  }, [activeAccount]);
   const toggleSelect = (id: Ulid) => {
     setSelected((s) => {
       const next = new Set(s);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
+  };
+  /**
+   * Standard selection gestures: click toggles a row (and anchors), shift-click
+   * selects everything between the anchor and the clicked row (in display
+   * order), cmd/ctrl-click toggles. `list` is whichever visible list the row
+   * belongs to — ranges don't span the scheduled/register boundary.
+   */
+  const rowSelect = (list: readonly Transaction[], id: Ulid, e: MouseEvent) => {
+    if (e.shiftKey && anchorRef.current) {
+      const a = list.findIndex((t) => t.id === anchorRef.current);
+      const b = list.findIndex((t) => t.id === id);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setSelected((s) => {
+          const next = new Set(s);
+          for (let k = lo; k <= hi; k++) next.add(list[k]!.id);
+          return next;
+        });
+        return;
+      }
+    }
+    anchorRef.current = id;
+    toggleSelect(id);
   };
   const selectedIds = [...selected];
   const selectedTxs = useMemo(() => budget.transactions.filter((t) => selected.has(t.id)), [budget, selected]);
@@ -272,6 +299,8 @@ export function TransactionsView() {
                 <Box
                   key={t.id}
                   onDoubleClick={() => !t.splits && !t.transfer && setEditingId(t.id)}
+                  onClick={(e) => { if (e.shiftKey || e.metaKey || e.ctrlKey) rowSelect(scheduled, t.id, e); }}
+                  onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
                   style={{
                     display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px",
                     borderTop: "1px solid var(--mantine-color-orange-2)",
@@ -279,7 +308,13 @@ export function TransactionsView() {
                     cursor: !t.splits && !t.transfer ? "pointer" : "default",
                   }}
                 >
-                  <Checkbox size="xs" checked={selected.has(t.id)} onChange={() => toggleSelect(t.id)} aria-label="Select row" />
+                  <Checkbox
+                    size="xs"
+                    checked={selected.has(t.id)}
+                    onChange={() => {}}
+                    onClick={(e) => { e.stopPropagation(); rowSelect(scheduled, t.id, e); }}
+                    aria-label="Select row"
+                  />
                   <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
                   <Group gap={4} wrap="nowrap">
                     <StatusBadge t={t} onApprove={() => approveTransaction(t.id)} onSetCleared={(c) => updateTransaction(t.id, { cleared: c })} />
@@ -345,9 +380,17 @@ export function TransactionsView() {
                 ) : (
                   <Box
                     onDoubleClick={() => !t.splits && !t.transfer && setEditingId(t.id)}
+                    onClick={(e) => { if (e.shiftKey || e.metaKey || e.ctrlKey) rowSelect(approved, t.id, e); }}
+                    onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
                     style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--mantine-color-default-border)", cursor: !t.splits && !t.transfer ? "pointer" : "default", background: selected.has(t.id) ? "var(--mantine-color-indigo-light)" : undefined }}
                   >
-                    <Checkbox size="xs" checked={selected.has(t.id)} onChange={() => toggleSelect(t.id)} aria-label="Select row" />
+                    <Checkbox
+                      size="xs"
+                      checked={selected.has(t.id)}
+                      onChange={() => {}}
+                      onClick={(e) => { e.stopPropagation(); rowSelect(approved, t.id, e); }}
+                      aria-label="Select row"
+                    />
                     <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
                     <Group gap={4} wrap="nowrap">
                       <StatusBadge t={t} onApprove={() => approveTransaction(t.id)} onSetCleared={(c) => updateTransaction(t.id, { cleared: c })} />

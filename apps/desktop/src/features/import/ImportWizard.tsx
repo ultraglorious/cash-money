@@ -703,7 +703,7 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
             mt="xs"
             checked={coverageOn}
             onChange={(e) => setCoverageOn(e.currentTarget.checked)}
-            label={`Invoice payment matched: ${money(coverage.paymentAmount, currency)} on ${coverage.paymentDate} settles the period ${coverage.windowFrom} – ${coverage.windowTo} (and everything before it) — mark ${settledCount} transaction${settledCount === 1 ? "" : "s"} reconciled`}
+            label={`Invoice payment matched (${coverage.chainLength} consecutive payments agree): ${money(coverage.paymentAmount, currency)} on ${coverage.paymentDate} settles the period ${coverage.windowFrom} – ${coverage.windowTo} and everything before it — mark ${settledCount} transaction${settledCount === 1 ? "" : "s"} reconciled`}
           />
         ) : coverage ? (
           <Text size="xs" c="dimmed" mt="xs">

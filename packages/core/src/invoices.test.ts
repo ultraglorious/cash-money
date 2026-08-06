@@ -59,18 +59,48 @@ describe("deduceInvoiceCoverage", () => {
     expect(new Set(r!.covered)).toEqual(new Set([...ids(rows), pay.id]));
   });
 
-  it("refuses when no exact window exists, and falls back to an older matchable payment", () => {
+  it("refuses when no exact window exists, and falls back to an older matchable chain", () => {
+    const dec = [spend("2025-12-05", -500)];
     const jan = [spend("2026-01-05", -1000)];
     const feb = [spend("2026-02-05", -2000)];
+    const pDec = payment("2026-01-10", 500);
     const pJan = payment("2026-02-10", 1000);
     const pFeb = payment("2026-03-10", 999999); // matches nothing
-    const r = deduceInvoiceCoverage([...jan, ...feb, pJan, pFeb], CARD);
+    const r = deduceInvoiceCoverage([...dec, ...jan, ...feb, pDec, pJan, pFeb], CARD);
     expect(r).not.toBeNull();
-    expect(r!.paymentTxId).toBe(pJan.id); // fell back
+    expect(r!.paymentTxId).toBe(pJan.id); // fell back to the Dec→Jan chain
+    expect(r!.chainLength).toBe(2);
     expect(r!.covered).toContain(jan[0]!.id);
     expect(r!.covered).not.toContain(feb[0]!.id);
+    expect(r!.covered).not.toContain(pFeb.id);
 
     expect(deduceInvoiceCoverage([...feb, payment("2026-03-10", 123456)], CARD)).toBeNull();
+  });
+
+  it("rejects a coincidental shifted window — tiling with the previous payment pins the cutoff", () => {
+    // [Jun 20, Jul 2] also sums to the June payment, and a lone-window search
+    // that prefers late cutoffs would take it, wrongly settling July rows.
+    // The May→June chain forces the June window to start where May's ended.
+    const may = [spend("2026-05-08", -400)];
+    const jun = [spend("2026-06-05", -500), spend("2026-06-20", -300)];
+    const jul = [spend("2026-07-02", -500)]; // July period: unpaid until Aug 10
+    const pMay = payment("2026-06-10", 400);
+    const pJun = payment("2026-07-10", 800);
+    const r = deduceInvoiceCoverage([...may, ...jun, ...jul, pMay, pJun], CARD);
+    expect(r).not.toBeNull();
+    expect(r!.chainLength).toBe(2);
+    expect(r!.windowTo).toBe("2026-06-20");
+    expect(r!.covered).not.toContain(jul[0]!.id);
+    expect(new Set(r!.covered)).toEqual(new Set([...ids(may), ...ids(jun), pMay.id, pJun.id]));
+  });
+
+  it("never accepts a lone window when several payments exist (no chain, no coverage)", () => {
+    // Two payments, but the older one has no matchable window — the newer
+    // one alone would be a single unverifiable window, so: nothing.
+    const jun = [spend("2026-06-05", -500), spend("2026-06-20", -300)];
+    const pMay = payment("2026-06-10", 77777); // unmatchable
+    const pJun = payment("2026-07-10", 800);
+    expect(deduceInvoiceCoverage([...jun, pMay, pJun], CARD)).toBeNull();
   });
 
   it("ignores scheduled rows and other accounts", () => {
