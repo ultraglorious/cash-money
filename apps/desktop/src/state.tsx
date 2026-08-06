@@ -1,12 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import { Alert, Center, Loader, Stack, Text } from "@mantine/core";
+import { Alert, Button, Center, Group, Loader, Stack, Text } from "@mantine/core";
 import {
   BudgetRepository,
   computeProjection,
-  monthKeyOf,
   newId,
-  nextOccurrence,
   ops,
+  parseBudgetFile,
+  serializeBudgetFile,
   type AccountType,
   type Cents,
   type CurrencyConfig,
@@ -20,7 +20,14 @@ import {
   type Ulid,
 } from "@cash-money/core";
 import { demoBudget } from "./demo";
-import { isTauri, TauriFileSystem } from "./platform/tauriFs";
+import {
+  backupBudgetFile,
+  isConflictError,
+  isTauri,
+  readBudgetFile,
+  TauriFileSystem,
+  writeBudgetFile,
+} from "./platform/tauriFs";
 import { newEmptyBudget } from "./platform/newBudget";
 
 export type View =
@@ -37,52 +44,9 @@ function reducer(state: LoadedBudget | null, action: Action): LoadedBudget | nul
   return state;
 }
 
-async function saveWholeBudget(repo: BudgetRepository, b: LoadedBudget): Promise<void> {
-  await repo.saveBudgetMeta(b.budget);
-  await repo.saveAccounts(b.budget.id, b.accounts);
-  await repo.saveCategories(b.budget.id, b.groups, b.categories);
-  await repo.saveAssignments(b.budget.id, b.assignments);
-  await repo.writeAllTransactions(b.budget.id, b.transactions);
-  await repo.registerBudget({ id: b.budget.id, name: b.budget.name });
-}
-
-/**
- * Which on-disk slices the edits since the last save touched. Every action
- * marks what it changed, so a save writes only those files — a category rename
- * no longer rewrites years of transaction shards. `txAll` covers edits whose
- * reach isn't known per-month (imports, cascade deletes).
- */
-interface DirtySlices {
-  meta: boolean;
-  accounts: boolean;
-  categories: boolean;
-  assignments: boolean;
-  txMonths: Set<MonthKey>;
-  txAll: boolean;
-}
-const cleanSlices = (): DirtySlices => ({
-  meta: false,
-  accounts: false,
-  categories: false,
-  assignments: false,
-  txMonths: new Set(),
-  txAll: false,
-});
-const isClean = (d: DirtySlices): boolean =>
-  !d.meta && !d.accounts && !d.categories && !d.assignments && !d.txAll && d.txMonths.size === 0;
-
-async function saveDirty(repo: BudgetRepository, b: LoadedBudget, dirty: DirtySlices): Promise<void> {
-  // Safety net: an unmarked edit must never be dropped — write everything.
-  if (isClean(dirty)) return saveWholeBudget(repo, b);
-  if (dirty.meta) {
-    await repo.saveBudgetMeta(b.budget);
-    await repo.registerBudget({ id: b.budget.id, name: b.budget.name });
-  }
-  if (dirty.accounts) await repo.saveAccounts(b.budget.id, b.accounts);
-  if (dirty.categories) await repo.saveCategories(b.budget.id, b.groups, b.categories);
-  if (dirty.assignments) await repo.saveAssignments(b.budget.id, b.assignments);
-  if (dirty.txAll) await repo.writeAllTransactions(b.budget.id, b.transactions);
-  else if (dirty.txMonths.size > 0) await repo.writeTransactionMonths(b.budget.id, b.transactions, dirty.txMonths);
+/** A filesystem-friendly file name for a budget. */
+function budgetFileName(name: string): string {
+  return `${name.replace(/[^\w\- ]+/g, "").trim() || "Budget"}.cashmoney`;
 }
 
 /** Everything that changes as the user works: the budget, its projection, navigation. */
@@ -97,6 +61,8 @@ interface BudgetState {
   setView: (v: View) => void;
   accountName: (id: Ulid) => string;
   categoryName: (id: Ulid | undefined) => string;
+  /** Absolute path of the .cashmoney file this app follows (null in the browser preview). */
+  budgetFilePath: string | null;
 }
 
 /**
@@ -142,7 +108,7 @@ interface Actions {
   /** Mark statement-confirmed rows reconciled and advance the account's reconciled-through date. */
   reconcileAccount: (accountId: Ulid, txIds: Ulid[], through: string) => void;
 
-  /** User-saved register formats (empty / no-op in the browser preview). */
+  /** User-saved register formats (travel inside the budget file; empty in the browser preview). */
   loadFormats: () => Promise<SavedFormat[]>;
   saveFormats: (formats: SavedFormat[]) => Promise<void>;
   /** Which account was last reconciled with which format (newest first). */
@@ -154,6 +120,11 @@ interface Actions {
    * wizard recall the right account + mapping next time.
    */
   statementSourceKey: (accountId: Ulid, formatId: string) => Promise<string>;
+
+  /** Write the budget to a new .cashmoney path and follow it from now on. */
+  moveBudgetFile: (newPath: string) => Promise<void>;
+  /** Open an existing .cashmoney file, replacing the in-memory budget. */
+  openBudgetFile: (path: string) => Promise<void>;
 }
 
 export type AppState = BudgetState & Actions;
@@ -173,12 +144,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const budgetRef = useRef<LoadedBudget | null>(null);
   budgetRef.current = budget;
 
-  // Save lifecycle. Saves are many sequential file writes, so they must never
-  // overlap (interleaved writes could leave disk with a mix of two snapshots).
-  // The latest unsaved budget sits in pendingRef; every actual save is chained
-  // onto saveChainRef so at most one runs at a time, always the newest snapshot.
+  // ---- Single-file persistence ----------------------------------------------
+  // The whole budget lives in ONE .cashmoney file (JSON), typically in a
+  // cloud-synced folder. Saves rewrite the file atomically, debounced and
+  // serialized; the mtime we last saw guards against another device's sync
+  // having changed the file underneath us — a refused write surfaces a
+  // conflict banner instead of clobbering.
+  const filePathRef = useRef<string | null>(null);
+  const fileMtimeRef = useRef<number | undefined>(undefined);
+  const formatsRef = useRef<SavedFormat[]>([]);
+  const sourcesRef = useRef<ImportSourceEntry[]>([]);
+  const backedUpRef = useRef(false);
+  const conflictRef = useRef(false);
+  const [filePath, setFilePath] = useState<string | null>(null);
+  const [fileConflict, setFileConflict] = useState(false);
+
   const pendingRef = useRef<LoadedBudget | null>(null);
-  const dirtyRef = useRef<DirtySlices>(cleanSlices());
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -188,45 +169,120 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    const repo = repoRef.current;
     const snapshot = pendingRef.current;
-    const dirty = dirtyRef.current;
+    const path = filePathRef.current;
+    if (!snapshot || !path || conflictRef.current || !isTauri()) return saveChainRef.current;
     pendingRef.current = null;
-    dirtyRef.current = cleanSlices();
-    if (repo && snapshot) {
-      saveChainRef.current = saveChainRef.current
-        .then(() => saveDirty(repo, snapshot, dirty))
-        .catch((e) => console.error("Failed to save budget:", e));
-    }
+    saveChainRef.current = saveChainRef.current.then(async () => {
+      try {
+        // Once per session, keep the file's state at open as a .bak sibling.
+        if (!backedUpRef.current) {
+          backedUpRef.current = true;
+          await backupBudgetFile(path).catch(() => undefined);
+        }
+        const text = serializeBudgetFile(
+          { loaded: snapshot, savedFormats: formatsRef.current, importSources: sourcesRef.current },
+          new Date().toISOString(),
+        );
+        fileMtimeRef.current = await writeBudgetFile(path, text, fileMtimeRef.current);
+      } catch (e) {
+        if (isConflictError(e)) {
+          // Keep the unsaved snapshot; the user decides reload vs overwrite.
+          pendingRef.current = pendingRef.current ?? snapshot;
+          conflictRef.current = true;
+          setFileConflict(true);
+        } else {
+          console.error("Failed to save budget:", e);
+        }
+      }
+    });
     return saveChainRef.current;
   };
 
-  // Bootstrap: load from disk in Tauri, else use demo data in a plain browser.
+  /** Adopt freshly-read file contents as the app's state. */
+  const adoptRef = useRef<(path: string, contents: string, mtimeMs: number) => void>(() => {});
+  adoptRef.current = (path, contents, mtimeMs) => {
+    const data = parseBudgetFile(contents); // throws on anything invalid
+    filePathRef.current = path;
+    fileMtimeRef.current = mtimeMs;
+    formatsRef.current = data.savedFormats;
+    sourcesRef.current = data.importSources;
+    pendingRef.current = null;
+    backedUpRef.current = false;
+    conflictRef.current = false;
+    setFileConflict(false);
+    setFilePath(path);
+    setLoadError(null);
+    dispatch({ type: "set", budget: data.loaded });
+  };
+
+  const resolveConflictRef = useRef<(choice: "reload" | "overwrite") => Promise<void>>(async () => {});
+  resolveConflictRef.current = async (choice) => {
+    const path = filePathRef.current;
+    if (!path) return;
+    if (choice === "overwrite") {
+      conflictRef.current = false;
+      setFileConflict(false);
+      fileMtimeRef.current = undefined; // skip the guard once, on purpose
+      pendingRef.current = budgetRef.current;
+      await flushPendingRef.current();
+    } else {
+      try {
+        const { contents, mtimeMs } = await readBudgetFile(path);
+        adoptRef.current(path, contents, mtimeMs);
+      } catch (e) {
+        setLoadError(String(e));
+      }
+    }
+  };
+
+  // Bootstrap: follow the configured budget file; on first run assemble one
+  // from the legacy multi-file layout (left untouched) or start fresh. In a
+  // plain browser, demo data.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (isTauri()) {
-        const repo = new BudgetRepository(new TauriFileSystem());
-        repoRef.current = repo;
-        try {
-          const app = await repo.loadApp();
-          let loaded: LoadedBudget;
-          if (app.activeBudgetId) {
-            loaded = await repo.loadBudget(app.activeBudgetId);
-          } else {
-            loaded = newEmptyBudget();
-            await saveWholeBudget(repo, loaded);
-          }
-          if (!cancelled) dispatch({ type: "set", budget: loaded });
-        } catch (e) {
-          // Never fall back to a fresh empty budget here: the first edit would
-          // register it as active and the real data — still on disk — would be
-          // orphaned. Surface the problem instead.
-          console.error("Failed to load budget:", e);
-          if (!cancelled) setLoadError(String(e));
+      if (!isTauri()) {
+        if (!cancelled) dispatch({ type: "set", budget: demoBudget() });
+        return;
+      }
+      const repo = new BudgetRepository(new TauriFileSystem());
+      repoRef.current = repo;
+      try {
+        const app = await repo.loadApp();
+        if (app.budgetFilePath) {
+          const { contents, mtimeMs } = await readBudgetFile(app.budgetFilePath);
+          if (!cancelled) adoptRef.current(app.budgetFilePath, contents, mtimeMs);
+          return;
         }
-      } else if (!cancelled) {
-        dispatch({ type: "set", budget: demoBudget() });
+        // First run on the single-file format: migrate legacy data if present.
+        let loaded: LoadedBudget;
+        if (app.activeBudgetId) {
+          loaded = await repo.loadBudget(app.activeBudgetId);
+          formatsRef.current = await repo.loadFormats().catch(() => []);
+          sourcesRef.current = await repo.loadImportSources(app.activeBudgetId).catch(() => []);
+        } else {
+          loaded = newEmptyBudget();
+        }
+        const { appDataDir, join } = await import("@tauri-apps/api/path");
+        const path = await join(await appDataDir(), budgetFileName(loaded.budget.name));
+        const text = serializeBudgetFile(
+          { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current },
+          new Date().toISOString(),
+        );
+        const mtime = await writeBudgetFile(path, text);
+        await repo.saveApp({ ...app, budgetFilePath: path });
+        if (cancelled) return;
+        filePathRef.current = path;
+        fileMtimeRef.current = mtime;
+        backedUpRef.current = true; // just written; nothing older to preserve
+        setFilePath(path);
+        dispatch({ type: "set", budget: loaded });
+      } catch (e) {
+        // Never fall back to a fresh empty budget here: the real data — still
+        // on disk or in the file — would be orphaned. Surface the problem.
+        console.error("Failed to load budget:", e);
+        if (!cancelled) setLoadError(String(e));
       }
     })();
     return () => {
@@ -236,7 +292,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Persist changes (debounced, serialized). Skips the initial hydration.
   useEffect(() => {
-    if (!budget || !repoRef.current) return;
+    if (!budget || !filePathRef.current) return;
     if (!hydratedRef.current) {
       hydratedRef.current = true;
       return;
@@ -278,104 +334,99 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // dispatch and refs, so its identity is stable for the app's lifetime.
   const actions = useMemo<Actions>(() => {
     const apply = (fn: (b: LoadedBudget) => LoadedBudget) => dispatch({ type: "apply", fn });
-    const mark = (patch: Partial<Omit<DirtySlices, "txMonths">> & { txMonths?: Array<MonthKey | undefined> }) => {
-      const d = dirtyRef.current;
-      if (patch.meta) d.meta = true;
-      if (patch.accounts) d.accounts = true;
-      if (patch.categories) d.categories = true;
-      if (patch.assignments) d.assignments = true;
-      if (patch.txAll) d.txAll = true;
-      for (const m of patch.txMonths ?? []) if (m) d.txMonths.add(m);
+    /** Formats/sources changed without a budget edit: schedule a file save anyway. */
+    const scheduleSave = () => {
+      if (!budgetRef.current) return;
+      pendingRef.current = budgetRef.current;
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => void flushPendingRef.current(), 500);
     };
-    /** Month of an existing transaction (for shard-precise saves). */
-    const txMonth = (id: Ulid): MonthKey | undefined => {
-      const t = budgetRef.current?.transactions.find((x) => x.id === id);
-      return t ? monthKeyOf(t.date) : undefined;
-    };
-    /** Month the next occurrence of a repeating txn will land in, if any. */
-    const successorMonth = (id: Ulid): MonthKey | undefined => {
-      const t = budgetRef.current?.transactions.find((x) => x.id === id);
-      return t?.recurrence && !t.approved
-        ? monthKeyOf(nextOccurrence(t.date, t.recurrence.freq, t.recurrence.anchorDay))
-        : undefined;
-    };
-    const markAll = () => mark({ meta: true, accounts: true, categories: true, assignments: true, txAll: true });
 
     return {
-      replaceBudget: (b) => {
-        markAll();
-        dispatch({ type: "set", budget: b });
-      },
-      addAccount: (args) => { mark({ accounts: true }); apply((b) => ops.addAccount(b, args)); },
-      setAccountOrder: (orderedIds) => { mark({ accounts: true }); apply((b) => ops.setAccountOrder(b, orderedIds)); },
-      setAccountClosed: (id, closed) => { mark({ accounts: true }); apply((b) => ops.setAccountClosed(b, id, closed)); },
-      renameAccount: (id, name) => { mark({ accounts: true }); apply((b) => ops.renameAccount(b, id, name)); },
-      reorderCategory: (categoryId, toGroupId, targetIndex) => { mark({ categories: true }); apply((b) => ops.reorderCategory(b, categoryId, toGroupId, targetIndex)); },
-      setCategoryOrder: (groupId, orderedIds) => { mark({ categories: true }); apply((b) => ops.setCategoryOrder(b, groupId, orderedIds)); },
-      setGroupOrder: (orderedGroupIds) => { mark({ categories: true }); apply((b) => ops.setGroupOrder(b, orderedGroupIds)); },
-      setHouseholdOrder: (orderedHouseholds) => { mark({ meta: true }); apply((b) => ops.setHouseholdOrder(b, orderedHouseholds)); },
-      addGroup: (name, household) => { mark({ categories: true }); apply((b) => ops.addGroup(b, { name, household })); },
-      renameGroup: (id, name) => { mark({ categories: true }); apply((b) => ops.renameGroup(b, id, name)); },
-      setGroupHidden: (id, hidden) => { mark({ categories: true }); apply((b) => ops.setGroupHidden(b, id, hidden)); },
-      // Cascade deletes clear category refs on transactions in unknown months.
-      deleteGroup: (id) => { mark({ categories: true, assignments: true, txAll: true }); apply((b) => ops.deleteGroup(b, id)); },
-      addCategory: (groupId, name) => { mark({ categories: true }); apply((b) => ops.addCategory(b, { groupId, name })); },
-      renameCategory: (id, name) => { mark({ categories: true }); apply((b) => ops.renameCategory(b, id, name)); },
-      moveCategory: (id, toGroupId) => { mark({ categories: true }); apply((b) => ops.moveCategory(b, id, toGroupId)); },
-      setCategoryHidden: (id, hidden) => { mark({ categories: true }); apply((b) => ops.setCategoryHidden(b, id, hidden)); },
-      deleteCategory: (id) => { mark({ categories: true, assignments: true, txAll: true }); apply((b) => ops.deleteCategory(b, id)); },
-      setAssigned: (m, categoryId, amount) => { mark({ assignments: true }); apply((b) => ops.setAssigned(b, m, categoryId, amount)); },
-      moveMoney: (m, from, to, amount) => { mark({ assignments: true }); apply((b) => ops.moveMoney(b, m, from, to, amount)); },
-      coverShortfall: (m, from, to) => { mark({ assignments: true }); apply((b) => ops.coverShortfall(b, m, from, to)); },
-      addTransaction: (tx) => { mark({ txMonths: [monthKeyOf(tx.date)] }); apply((b) => ops.addTransaction(b, tx)); },
-      addTransactions: (txs) => { mark({ txMonths: txs.map((t) => monthKeyOf(t.date)) }); apply((b) => ops.addTransactions(b, txs)); },
-      setTransactions: (txs) => { mark({ txAll: true }); apply((b) => ops.setTransactions(b, txs)); },
-      // A date edit can move the row across shards: mark old AND new months.
-      updateTransaction: (id, patch) => {
-        mark({ txMonths: [txMonth(id), patch.date ? monthKeyOf(patch.date) : undefined] });
-        apply((b) => ops.updateTransaction(b, id, patch));
-      },
-      deleteTransaction: (id) => { mark({ txMonths: [txMonth(id)] }); apply((b) => ops.deleteTransaction(b, id)); },
-      deleteTransactions: (ids) => { mark({ txMonths: ids.map(txMonth) }); apply((b) => ops.deleteTransactions(b, ids)); },
-      // Approving a repeating txn spawns its next occurrence in a LATER month —
-      // that shard must be marked dirty too or the successor never hits disk.
-      approveTransaction: (id) => { mark({ txMonths: [txMonth(id), successorMonth(id)] }); apply((b) => ops.approveTransaction(b, id)); },
-      approveTransactions: (ids) => { mark({ txMonths: [...ids.map(txMonth), ...ids.map(successorMonth)] }); apply((b) => ops.approveTransactions(b, ids)); },
-      setClearedStatus: (ids, cleared) => { mark({ txMonths: ids.map(txMonth) }); apply((b) => ops.setClearedStatus(b, ids, cleared)); },
-      renamePayee: (from, to) => { mark({ txAll: true }); apply((b) => ops.renamePayee(b, from, to)); },
-      setSplits: (id, splits, categoryIdWhenUnsplit) => { mark({ txMonths: [txMonth(id)] }); apply((b) => ops.setSplits(b, id, splits, categoryIdWhenUnsplit)); },
-      reconcileAccount: (accountId, txIds, through) => {
-        mark({ accounts: true, txMonths: txIds.map(txMonth) });
-        apply((b) => ops.reconcileAccount(b, accountId, txIds, through));
-      },
+      replaceBudget: (b) => dispatch({ type: "set", budget: b }),
+      addAccount: (args) => apply((b) => ops.addAccount(b, args)),
+      setAccountOrder: (orderedIds) => apply((b) => ops.setAccountOrder(b, orderedIds)),
+      setAccountClosed: (id, closed) => apply((b) => ops.setAccountClosed(b, id, closed)),
+      renameAccount: (id, name) => apply((b) => ops.renameAccount(b, id, name)),
+      reorderCategory: (categoryId, toGroupId, targetIndex) => apply((b) => ops.reorderCategory(b, categoryId, toGroupId, targetIndex)),
+      setCategoryOrder: (groupId, orderedIds) => apply((b) => ops.setCategoryOrder(b, groupId, orderedIds)),
+      setGroupOrder: (orderedGroupIds) => apply((b) => ops.setGroupOrder(b, orderedGroupIds)),
+      setHouseholdOrder: (orderedHouseholds) => apply((b) => ops.setHouseholdOrder(b, orderedHouseholds)),
+      addGroup: (name, household) => apply((b) => ops.addGroup(b, { name, household })),
+      renameGroup: (id, name) => apply((b) => ops.renameGroup(b, id, name)),
+      setGroupHidden: (id, hidden) => apply((b) => ops.setGroupHidden(b, id, hidden)),
+      deleteGroup: (id) => apply((b) => ops.deleteGroup(b, id)),
+      addCategory: (groupId, name) => apply((b) => ops.addCategory(b, { groupId, name })),
+      renameCategory: (id, name) => apply((b) => ops.renameCategory(b, id, name)),
+      moveCategory: (id, toGroupId) => apply((b) => ops.moveCategory(b, id, toGroupId)),
+      setCategoryHidden: (id, hidden) => apply((b) => ops.setCategoryHidden(b, id, hidden)),
+      deleteCategory: (id) => apply((b) => ops.deleteCategory(b, id)),
+      setAssigned: (m, categoryId, amount) => apply((b) => ops.setAssigned(b, m, categoryId, amount)),
+      moveMoney: (m, from, to, amount) => apply((b) => ops.moveMoney(b, m, from, to, amount)),
+      coverShortfall: (m, from, to) => apply((b) => ops.coverShortfall(b, m, from, to)),
+      addTransaction: (tx) => apply((b) => ops.addTransaction(b, tx)),
+      addTransactions: (txs) => apply((b) => ops.addTransactions(b, txs)),
+      setTransactions: (txs) => apply((b) => ops.setTransactions(b, txs)),
+      updateTransaction: (id, patch) => apply((b) => ops.updateTransaction(b, id, patch)),
+      deleteTransaction: (id) => apply((b) => ops.deleteTransaction(b, id)),
+      deleteTransactions: (ids) => apply((b) => ops.deleteTransactions(b, ids)),
+      approveTransaction: (id) => apply((b) => ops.approveTransaction(b, id)),
+      approveTransactions: (ids) => apply((b) => ops.approveTransactions(b, ids)),
+      setClearedStatus: (ids, cleared) => apply((b) => ops.setClearedStatus(b, ids, cleared)),
+      renamePayee: (from, to) => apply((b) => ops.renamePayee(b, from, to)),
+      setSplits: (id, splits, categoryIdWhenUnsplit) => apply((b) => ops.setSplits(b, id, splits, categoryIdWhenUnsplit)),
+      reconcileAccount: (accountId, txIds, through) => apply((b) => ops.reconcileAccount(b, accountId, txIds, through)),
 
-      loadFormats: () => repoRef.current?.loadFormats() ?? Promise.resolve([]),
-      saveFormats: (formats) => repoRef.current?.saveFormats(formats) ?? Promise.resolve(),
-      listStatementSources: async () => {
-        const repo = repoRef.current;
-        const budgetId = budgetRef.current?.budget.id;
-        if (!repo || !budgetId) return [];
-        const entries = await repo.loadImportSources(budgetId);
-        return [...entries].sort((a, b) => (b.lastUsed ?? "").localeCompare(a.lastUsed ?? ""));
+      loadFormats: () => Promise.resolve([...formatsRef.current]),
+      saveFormats: (formats) => {
+        formatsRef.current = formats;
+        scheduleSave();
+        return Promise.resolve();
       },
+      listStatementSources: () =>
+        Promise.resolve([...sourcesRef.current].sort((a, b) => (b.lastUsed ?? "").localeCompare(a.lastUsed ?? ""))),
       statementSourceKey: async (accountId, formatId) => {
-        const repo = repoRef.current;
-        const budgetId = budgetRef.current?.budget.id;
-        // Browser preview: deterministic per-account key, nothing persisted.
-        if (!repo || !budgetId) return `stmt:${accountId}`;
-        const entries = await repo.loadImportSources(budgetId);
+        if (!isTauri()) return `stmt:${accountId}`; // browser preview: nothing persists
         const lastUsed = new Date().toISOString().slice(0, 10);
-        const existing = entries.find((e) => e.accountId === accountId);
+        const existing = sourcesRef.current.find((e) => e.accountId === accountId);
         if (existing) {
-          await repo.saveImportSources(
-            budgetId,
-            entries.map((e) => (e === existing ? { ...e, formatId, lastUsed } : e)),
-          );
+          sourcesRef.current = sourcesRef.current.map((e) => (e === existing ? { ...e, formatId, lastUsed } : e));
+          scheduleSave();
           return existing.sourceKey;
         }
         const sourceKey = newId();
-        await repo.saveImportSources(budgetId, [...entries, { accountId, formatId, sourceKey, lastUsed }]);
+        sourcesRef.current = [...sourcesRef.current, { accountId, formatId, sourceKey, lastUsed }];
+        scheduleSave();
         return sourceKey;
+      },
+
+      moveBudgetFile: async (newPath) => {
+        const b = budgetRef.current;
+        const repo = repoRef.current;
+        if (!b || !repo) throw new Error("No budget loaded");
+        const text = serializeBudgetFile(
+          { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current },
+          new Date().toISOString(),
+        );
+        const mtime = await writeBudgetFile(newPath, text); // save dialog already confirmed any overwrite
+        const app = await repo.loadApp();
+        await repo.saveApp({ ...app, budgetFilePath: newPath });
+        filePathRef.current = newPath;
+        fileMtimeRef.current = mtime;
+        backedUpRef.current = true;
+        conflictRef.current = false;
+        setFileConflict(false);
+        setFilePath(newPath);
+      },
+      openBudgetFile: async (path) => {
+        const repo = repoRef.current;
+        if (!repo) throw new Error("Only available in the desktop app");
+        const { contents, mtimeMs } = await readBudgetFile(path);
+        // Parse BEFORE committing to the path, so a bad pick changes nothing.
+        parseBudgetFile(contents);
+        const app = await repo.loadApp();
+        await repo.saveApp({ ...app, budgetFilePath: path });
+        adoptRef.current(path, contents, mtimeMs);
       },
     };
   }, []);
@@ -396,21 +447,42 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setView,
       accountName: (id) => accById.get(id) ?? "—",
       categoryName: (id) => (id ? catById.get(id) ?? "—" : ""),
+      budgetFilePath: filePath,
     };
-  }, [budget, projection, activeMonth, view, accById, catById]);
+  }, [budget, projection, activeMonth, view, accById, catById, filePath]);
 
   if (loadError) {
     return (
       <Center h="100vh" p="xl">
         <Alert color="red" title="Couldn't read your budget" maw={560}>
           <Text size="sm">
-            Your data is still on disk, but it couldn't be loaded, so editing is disabled to
-            avoid overwriting anything. Fix the cause (or restore the data folder from a backup)
-            and reopen the app.
+            Your data is still on disk, but it couldn't be loaded, so editing is disabled to avoid
+            overwriting anything. If the budget file moved (or hasn't synced down yet), locate it below;
+            otherwise fix the cause and reopen the app.
           </Text>
-          <Text size="xs" c="dimmed" mt="sm" style={{ fontFamily: "monospace" }}>
+          <Text size="xs" c="dimmed" mt="sm" style={{ fontFamily: "monospace", wordBreak: "break-all" }}>
             {loadError}
           </Text>
+          <Group mt="md">
+            <Button
+              size="xs"
+              variant="light"
+              onClick={() => {
+                void (async () => {
+                  const { open } = await import("@tauri-apps/plugin-dialog");
+                  const picked = await open({ multiple: false, filters: [{ name: "Budget", extensions: ["cashmoney"] }] });
+                  if (!picked || Array.isArray(picked)) return;
+                  try {
+                    await actions.openBudgetFile(picked);
+                  } catch (e) {
+                    setLoadError(String(e));
+                  }
+                })();
+              }}
+            >
+              Locate budget file…
+            </Button>
+          </Group>
         </Alert>
       </Center>
     );
@@ -431,7 +503,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   return (
     <ActionsCtx.Provider value={actions}>
-      <DataCtx.Provider value={data}>{children}</DataCtx.Provider>
+      <DataCtx.Provider value={data}>
+        {fileConflict && (
+          <Alert
+            color="orange"
+            title="The budget file changed outside this app"
+            style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 1000, maxWidth: 560, boxShadow: "var(--mantine-shadow-md)" }}
+          >
+            <Text size="sm">
+              Another device (or a sync service) wrote to the file since this app last saved. Saving is
+              paused so nothing gets clobbered.
+            </Text>
+            <Group mt="sm" gap="xs">
+              <Button size="xs" color="orange" variant="light" onClick={() => void resolveConflictRef.current("reload")}>
+                Load the file's version
+              </Button>
+              <Button size="xs" color="red" variant="light" onClick={() => void resolveConflictRef.current("overwrite")}>
+                Keep this app's version
+              </Button>
+            </Group>
+          </Alert>
+        )}
+        {children}
+      </DataCtx.Provider>
     </ActionsCtx.Provider>
   );
 }

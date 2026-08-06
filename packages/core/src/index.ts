@@ -10,6 +10,7 @@ export * from "./model/schema.js";
 export * as layout from "./persistence/layout.js";
 export * from "./persistence/serialize.js";
 export * from "./persistence/repository.js";
+export { BUDGET_FILE_VERSION, parseBudgetFile, serializeBudgetFile, type BudgetFileData } from "./persistence/budgetFile.js";
 export { InMemoryFileSystem } from "./persistence/memoryFs.js";
 export * from "./engine/index.js";
 export * as ops from "./ops.js";

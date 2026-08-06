@@ -155,32 +155,33 @@ op, not by clicking around.
 
 ## Persistence (`packages/core/src/persistence/`)
 
-The core never calls the filesystem. It depends on a **`FileSystemPort`**
-interface (read/write/list/remove text files). Tests inject an in-memory
-implementation; the desktop app injects a disk-backed one built on Tauri's Rust
-commands. On-disk layout under one data folder:
+The whole budget lives in **one `.cashmoney` file** (`budgetFile.ts`): a single
+JSON document containing the budget, accounts, categories, assignments, every
+transaction, plus the user's saved statement mappings and per-account statement
+sources — so the file is fully self-contained. It is serialized
+deterministically (sorted keys, id-sorted collections), which makes two saves of
+the same data byte-identical, and written **atomically** (temp file + rename).
+The file can live anywhere — putting it in a cloud-synced folder (iCloud Drive,
+Dropbox, Syncthing) is the supported way to use one budget on several machines,
+**one at a time**: the app tracks the file's mtime and refuses to overwrite a
+file that changed underneath it, surfacing a reload-or-overwrite choice instead.
+A `.bak` sibling of the previous session's state is kept alongside.
 
-```
-app.json                         index of budgets
-budgets/<id>/
-  budget.json  accounts.json  categories.json  assignments.json   (pretty, stable-sorted)
-  transactions/YYYY-MM.ndjson    one transaction per line, sharded by month
-  import/                        re-import bookkeeping
-```
-
-Files are written **atomically** (temp file + rename) and serialized
-deterministically (sorted keys, stable ordering) so diffs are meaningful — which
-also sets up cloud-folder sync later. No absolute paths are stored inside files,
-so the whole folder can be relocated.
+The tiny `app.json` in the platform app-data folder only remembers *which* file
+to follow. The older multi-file layout (`repository.ts`: per-slice JSON +
+month-sharded NDJSON behind a `FileSystemPort`) remains as the migration source
+— on first run the app assembles a `.cashmoney` file from it and leaves the old
+files untouched.
 
 ## UI state flow (`apps/desktop/src/state.tsx`)
 
 One store holds the current `LoadedBudget`. On any change it recomputes the
 projection with `computeProjection` (memoized) and re-renders. Components read
-from the store and call ops. In the desktop app changes are saved to disk with a
-short debounce; saves are serialized (never overlapping) and flushed before the
-window closes. In a plain browser the store is seeded with a synthetic demo
-budget (`demo.ts`) so the UI renders without any real data or persistence.
+from the store and call ops. In the desktop app every change rewrites the
+budget file with a short debounce; saves are serialized (never overlapping),
+guarded by the file's last-seen mtime, and flushed before the window closes. In
+a plain browser the store is seeded with a synthetic demo budget (`demo.ts`) so
+the UI renders without any real data or persistence.
 
 ## Testing
 

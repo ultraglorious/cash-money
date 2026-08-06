@@ -13,6 +13,7 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   IconBuildingBank,
   IconChartHistogram,
+  IconCloud,
   IconCreditCard,
   IconFileImport,
   IconLayoutGrid,
@@ -26,6 +27,7 @@ import { useApp } from "../state";
 import { money } from "../format";
 import { amountColor, householdColor } from "../theme";
 import { AddAccountModal } from "./AddAccountModal";
+import { BudgetFileModal } from "./BudgetFileModal";
 import { ManageAccountsModal } from "./ManageAccountsModal";
 import { ImportWizard } from "../features/import/ImportWizard";
 import { Wordmark } from "./Wordmark";
@@ -41,6 +43,7 @@ export function Sidebar() {
   const [addOpen, addModal] = useDisclosure(false);
   const [importOpen, importModal] = useDisclosure(false);
   const [manageOpen, manageModal] = useDisclosure(false);
+  const [fileOpen, fileModal] = useDisclosure(false);
   const balances = projection.accountBalances();
   const households = projection.households;
   const balOf = (id: Ulid) => balances.get(id) ?? 0;
@@ -103,14 +106,18 @@ export function Sidebar() {
         </DndContext>
       </ScrollArea>
 
-      <Group px="sm" py="xs" style={{ borderTop: "1px solid var(--mantine-color-default-border)" }}>
+      <Stack gap={0} px="sm" py="xs" style={{ borderTop: "1px solid var(--mantine-color-default-border)" }}>
         <Button variant="subtle" color="gray" size="xs" fullWidth justify="flex-start" leftSection={<IconFileImport size={15} />} onClick={importModal.open}>
           Import…
         </Button>
-      </Group>
+        <Button variant="subtle" color="gray" size="xs" fullWidth justify="flex-start" leftSection={<IconCloud size={15} />} onClick={fileModal.open}>
+          Budget file…
+        </Button>
+      </Stack>
 
       <AddAccountModal opened={addOpen} onClose={addModal.close} />
       <ManageAccountsModal opened={manageOpen} onClose={manageModal.close} />
+      <BudgetFileModal opened={fileOpen} onClose={fileModal.close} />
       <ImportWizard opened={importOpen} onClose={importModal.close} />
     </Stack>
   );

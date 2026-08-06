@@ -51,6 +51,8 @@ export interface AppIndex {
   schemaVersion: number;
   activeBudgetId?: Ulid;
   budgets: BudgetIndexEntry[];
+  /** Absolute path of the single-file budget (`.cashmoney`) this app follows. */
+  budgetFilePath?: string;
 }
 
 const EMPTY_APP: AppIndex = { schemaVersion: SCHEMA_VERSION, budgets: [] };
