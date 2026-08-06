@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { ActionIcon, Badge, Box, Button, Checkbox, Collapse, Group, Menu, Select, Text, TextInput, Title, Tooltip } from "@mantine/core";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -143,6 +143,9 @@ export function TransactionsView() {
   const addFromEditor = (data: EditorSubmit) => {
     // Future-dated entries are scheduled: they wait for approval on their day.
     const approved = data.date <= todayIso();
+    // A card swipe isn't PAID until its bill is — new credit-card entries
+    // start uncleared; debit entries settle immediately and start cleared.
+    const isCard = budget.accounts.find((a) => a.id === data.accountId)?.type === "creditCard";
     const tx: Transaction = {
       id: newId(),
       accountId: data.accountId,
@@ -151,7 +154,7 @@ export function TransactionsView() {
       payee: data.payee,
       memo: data.memo,
       amount: data.amount,
-      cleared: approved ? data.cleared : "uncleared",
+      cleared: !approved || isCard ? "uncleared" : data.cleared,
       approved,
       ...(data.recurrence ? { recurrence: data.recurrence } : {}),
       ...(data.splits ? { splits: data.splits } : data.categoryId ? { categoryId: data.categoryId } : {}),
@@ -279,7 +282,7 @@ export function TransactionsView() {
                   <Checkbox size="xs" checked={selected.has(t.id)} onChange={() => toggleSelect(t.id)} aria-label="Select row" />
                   <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
                   <Group gap={4} wrap="nowrap">
-                    <Badge size="xs" color="orange" variant={due ? "filled" : "light"}>{due ? "due" : "scheduled"}</Badge>
+                    <StatusBadge t={t} onApprove={() => approveTransaction(t.id)} onSetCleared={(c) => updateTransaction(t.id, { cleared: c })} />
                     {t.recurrence && (
                       <Tooltip label={`Repeats ${FREQ_LABEL[t.recurrence.freq]} — approving schedules the next one`} withArrow>
                         <Badge size="xs" color="grape" variant="light" leftSection={<IconRepeat size={10} />}>{FREQ_LABEL[t.recurrence.freq]}</Badge>
@@ -347,11 +350,7 @@ export function TransactionsView() {
                     <Checkbox size="xs" checked={selected.has(t.id)} onChange={() => toggleSelect(t.id)} aria-label="Select row" />
                     <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
                     <Group gap={4} wrap="nowrap">
-                      {!t.approved ? (
-                        <Badge size="xs" color="orange" variant="light">scheduled</Badge>
-                      ) : (
-                        <Badge size="xs" color={t.cleared === "reconciled" ? "blue" : t.cleared === "cleared" ? "teal" : "gray"} variant="light">{t.cleared}</Badge>
-                      )}
+                      <StatusBadge t={t} onApprove={() => approveTransaction(t.id)} onSetCleared={(c) => updateTransaction(t.id, { cleared: c })} />
                       {t.recurrence && (
                         <Tooltip label={`Repeats ${FREQ_LABEL[t.recurrence.freq]}`} withArrow>
                           <Badge size="xs" color="grape" variant="light" px={4}><IconRepeat size={10} /></Badge>
@@ -389,6 +388,48 @@ export function TransactionsView() {
       />
       <PayeesModal opened={payeesOpen} onClose={() => setPayeesOpen(false)} />
     </Box>
+  );
+}
+
+/**
+ * The status lifecycle, clickable: scheduled (pending, not counted) → approve →
+ * uncleared (real, but not yet settled — e.g. on a card bill you haven't paid)
+ * → cleared (actually paid). Reconciled is statement-confirmed and asks before
+ * unlocking. Clicks stop propagating so they never trigger the row editor.
+ */
+function StatusBadge({ t, onApprove, onSetCleared }: {
+  t: Transaction;
+  onApprove: () => void;
+  onSetCleared: (c: Transaction["cleared"]) => void;
+}) {
+  const stop = { onDoubleClick: (e: MouseEvent) => e.stopPropagation(), style: { cursor: "pointer" } };
+  if (!t.approved) {
+    const due = t.date <= todayIso();
+    return (
+      <Tooltip label="Pending your approval — click to enter it into the budget as uncleared" withArrow>
+        <Badge size="xs" color="orange" variant={due ? "filled" : "light"} {...stop} onClick={(e) => { e.stopPropagation(); onApprove(); }}>
+          {due ? "due" : "scheduled"}
+        </Badge>
+      </Tooltip>
+    );
+  }
+  const next: Record<Transaction["cleared"], Transaction["cleared"]> = { uncleared: "cleared", cleared: "uncleared", reconciled: "uncleared" };
+  const tip = {
+    cleared: "Paid — settled at the bank. Click to mark uncleared.",
+    uncleared: "Real but not yet settled (e.g. awaiting the card bill). Click to mark cleared.",
+    reconciled: "Confirmed by a bank statement. Click to unlock as uncleared.",
+  }[t.cleared];
+  const click = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (t.cleared === "reconciled" && !window.confirm("This row was confirmed by a bank statement. Mark it uncleared anyway?")) return;
+    onSetCleared(next[t.cleared]);
+  };
+  return (
+    <Tooltip label={tip} withArrow>
+      <Badge size="xs" color={t.cleared === "reconciled" ? "blue" : t.cleared === "cleared" ? "teal" : "gray"} variant="light" {...stop} onClick={click}>
+        {t.cleared}
+      </Badge>
+    </Tooltip>
   );
 }
 

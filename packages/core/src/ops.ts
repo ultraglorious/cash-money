@@ -311,7 +311,10 @@ export function approveTransaction(b: LoadedBudget, txId: Ulid): LoadedBudget {
 
 /**
  * Approve many scheduled transactions in one pass (one recompute, not N).
- * Approving a repeating one also enters its next occurrence into the schedule.
+ * An approved row enters the register as `uncleared` — it's now real and
+ * counted, but not yet settled (paid at the bank / on a paid card bill); the
+ * user clears it when it settles. Approving a repeating one also enters its
+ * next occurrence into the schedule.
  */
 export function approveTransactions(b: LoadedBudget, txIds: readonly Ulid[]): LoadedBudget {
   const ids = new Set(txIds);
@@ -320,7 +323,7 @@ export function approveTransactions(b: LoadedBudget, txIds: readonly Ulid[]): Lo
     if (!ids.has(t.id) || t.approved) return t;
     const next = scheduledSuccessor(t);
     if (next) successors.push(next);
-    return { ...t, approved: true };
+    return { ...t, approved: true, cleared: "uncleared" as const };
   });
   return { ...b, transactions: successors.length > 0 ? [...transactions, ...successors] : transactions };
 }

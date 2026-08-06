@@ -262,14 +262,15 @@ describe("transaction ops", () => {
     expect(b3.accounts.find((a) => a.id === CHK)!.reconciledThrough).toBe("2026-02-28");
   });
 
-  it("approveTransaction makes a scheduled txn count", () => {
+  it("approveTransaction makes a scheduled txn count, entering it as uncleared", () => {
     const withScheduled = ops.addTransaction(
       base(),
-      f.txn({ id: f.tid("TS"), accountId: CHK, date: "2026-01-25", amount: -4000 as Cents, categoryId: DIN, approved: false }),
+      f.txn({ id: f.tid("TS"), accountId: CHK, date: "2026-01-25", amount: -4000 as Cents, categoryId: DIN, approved: false, cleared: "cleared" }),
     );
     expect(computeProjection(withScheduled).activityOf(DIN, M)).toBe(0);
     const approved = ops.approveTransaction(withScheduled, f.tid("TS"));
     expect(computeProjection(approved).activityOf(DIN, M)).toBe(-4000);
+    expect(approved.transactions.find((t) => t.id === f.tid("TS"))!.cleared).toBe("uncleared");
   });
 
   it("setSplits enforces the sum, splits activity across categories, and unsplits back", () => {
