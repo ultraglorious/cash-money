@@ -9,6 +9,7 @@ import {
   Group,
   Modal,
   Paper,
+  Radio,
   SegmentedControl,
   Select,
   Stack,
@@ -20,6 +21,7 @@ import {
 import { IconAlertTriangle, IconFileImport, IconTrash } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  mergeImport,
   newId,
   parseCsv,
   stageImport,
@@ -106,13 +108,20 @@ function ExportPane({ onDone }: { onDone: () => void }) {
       if (!selected) return;
       const paths = Array.isArray(selected) ? selected : [selected];
       const drafts: SourceDraft[] = [];
+      const taken = new Set(sources.map((s) => s.sourceKey));
       for (const path of paths) {
         const members = await readZipCsvs(path);
         const register = members.find((m) => /register\.csv$/i.test(m.name))?.content ?? "";
         const plan = members.find((m) => /plan\.csv$/i.test(m.name))?.content ?? "";
         const base = path.split(/[/\\]/).pop()!.replace(/\.zip$/i, "");
         const household = base.replace(/\s*as of.*$/i, "").trim() || base;
-        drafts.push({ path, sourceKey: `${slug(household)}-${newId().slice(-6)}`, household, register, plan, exportDate: parseAsOf(base) });
+        // sourceKey must be STABLE across imports of the same export series —
+        // identities include it, so a fresh key would make nothing match on a
+        // merge re-import. Derive it from the filename's budget name alone.
+        let sourceKey = slug(household);
+        for (let n = 2; taken.has(sourceKey); n++) sourceKey = `${slug(household)}-${n}`;
+        taken.add(sourceKey);
+        drafts.push({ path, sourceKey, household, register, plan, exportDate: parseAsOf(base) });
       }
       setSources((s) => [...s, ...drafts]);
       setResult(null);
@@ -142,9 +151,29 @@ function ExportPane({ onDone }: { onDone: () => void }) {
     }
   };
 
+  // Merge only makes sense when the staged sources match provenance already in
+  // the budget — otherwise nothing would identity-match and imported history
+  // would simply duplicate.
+  const hasData = app.budget.transactions.length > 0;
+  const sourceOverlap =
+    result !== null &&
+    (() => {
+      const stagedKeys = new Set(result.staging.transactions.map((t) => t.source?.sourceBudget).filter(Boolean));
+      return app.budget.transactions.some((t) => t.source && stagedKeys.has(t.source.sourceBudget));
+    })();
+  const [commitMode, setCommitMode] = useState<"merge" | "replace">("replace");
+  useEffect(() => {
+    setCommitMode(sourceOverlap ? "merge" : "replace");
+  }, [sourceOverlap]);
+
   const commit = () => {
     if (!result) return;
-    app.replaceBudget(result.staging);
+    if (commitMode === "merge") {
+      const { merged } = mergeImport(app.budget, result.staging);
+      app.replaceBudget(merged);
+    } else {
+      app.replaceBudget(result.staging);
+    }
     app.setView({ kind: "plan" });
     onDone();
   };
@@ -201,14 +230,31 @@ function ExportPane({ onDone }: { onDone: () => void }) {
         </>
       )}
 
-      {result && <ReportView result={result} currency={app.currency} onCommit={commit} />}
+      {result && (
+        <ReportView
+          result={result}
+          currency={app.currency}
+          onCommit={commit}
+          hasData={hasData}
+          sourceOverlap={sourceOverlap}
+          mode={commitMode}
+          setMode={setCommitMode}
+        />
+      )}
     </Stack>
   );
 }
 
-function ReportView({ result, currency, onCommit }: { result: StagingResult; currency: CurrencyConfig; onCommit: () => void }) {
+function ReportView({ result, currency, onCommit, hasData, sourceOverlap, mode, setMode }: {
+  result: StagingResult;
+  currency: CurrencyConfig;
+  onCommit: () => void;
+  hasData: boolean;
+  sourceOverlap: boolean;
+  mode: "merge" | "replace";
+  setMode: (m: "merge" | "replace") => void;
+}) {
   const r = result.report;
-  const s = result.staging;
   const row = (label: string, value: string) => (
     <Group justify="space-between"><Text size="sm" c="dimmed">{label}</Text><Text size="sm" fw={500}>{value}</Text></Group>
   );
@@ -232,10 +278,36 @@ function ReportView({ result, currency, onCommit }: { result: StagingResult; cur
         )}
       </Stack>
       <Divider my="md" />
-      <Group justify="space-between">
-        <Text size="xs" c="dimmed">Budget "{s.budget.name}" — committing replaces your current budget.</Text>
-        <Button color="teal" onClick={onCommit}>Commit import</Button>
-      </Group>
+      {hasData ? (
+        <Stack gap="xs">
+          <Radio.Group value={mode} onChange={(v) => setMode(v as "merge" | "replace")}>
+            <Stack gap={6}>
+              <Radio
+                value="merge"
+                disabled={!sourceOverlap}
+                label="Merge into the current budget"
+                description={
+                  sourceOverlap
+                    ? "Keeps transactions you added in the app, bank-statement imports, and your account/category settings; the snapshot updates its own rows."
+                    : "Unavailable: nothing in the current budget came from these sources, so merging would duplicate the imported history."
+                }
+              />
+              <Radio
+                value="replace"
+                label="Replace the current budget"
+                description="Discards everything currently in the app and starts from this import."
+              />
+            </Stack>
+          </Radio.Group>
+          <Group justify="flex-end">
+            <Button color="teal" onClick={onCommit}>{mode === "merge" ? "Merge import" : "Replace budget"}</Button>
+          </Group>
+        </Stack>
+      ) : (
+        <Group justify="flex-end">
+          <Button color="teal" onClick={onCommit}>Commit import</Button>
+        </Group>
+      )}
     </Paper>
   );
 }

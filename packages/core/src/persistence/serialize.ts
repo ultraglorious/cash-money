@@ -27,7 +27,7 @@ export function stableJson(value: unknown): string {
 }
 
 /** Compact, stable single-line JSON (one NDJSON record). */
-export function stableJsonLine(value: unknown): string {
+function stableJsonLine(value: unknown): string {
   return JSON.stringify(sortKeys(value));
 }
 

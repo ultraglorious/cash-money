@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActionIcon,
   Badge,
@@ -186,7 +186,12 @@ export function PlansView() {
                 </UnstyledButton>
               </Popover.Target>
               <Popover.Dropdown>
-                <MonthPicker value={monthToDate(month)} onChange={(d) => { if (d) setMonth(dateToMonthKey(d)); picker.close(); }} />
+                <MonthPicker
+                  value={monthToDate(month)}
+                  minDate={months.length ? monthToDate(months[0]!) : undefined}
+                  maxDate={months.length ? monthToDate(months[months.length - 1]!) : undefined}
+                  onChange={(d) => { if (d) setMonth(dateToMonthKey(d)); picker.close(); }}
+                />
               </Popover.Dropdown>
             </Popover>
             <ActionIcon variant="white" color="dark" radius="xl" onClick={() => idx < months.length - 1 && setMonth(months[idx + 1]!)} disabled={idx >= months.length - 1} aria-label="Next month">
@@ -529,13 +534,24 @@ function AvailableCell({ categoryId, available, candidates }: { categoryId: Ulid
 }
 
 function AssignedCell({ categoryId, value }: { categoryId: Ulid; value: number }) {
-  const { month, setAssigned } = useApp();
+  const { month, setAssigned, currency } = useApp();
+  // Edits live in a local draft and commit on blur/Enter — dispatching per
+  // keystroke would recompute the whole projection (and persist intermediate
+  // values like the "1" of "1250") on every keypress.
+  const [draft, setDraft] = useState<number | string>(value / 100);
+  useEffect(() => setDraft(value / 100), [value]);
+  const commit = () => {
+    const cents = Math.round(Number(draft || 0) * 100) as Cents;
+    if (cents !== value) setAssigned(month, categoryId, cents);
+  };
   return (
     <NumberInput
-      size="xs" variant="filled" prefix="€" decimalScale={2} fixedDecimalScale hideControls thousandSeparator=","
+      size="xs" variant="filled" prefix={currency.symbol} decimalScale={2} fixedDecimalScale hideControls thousandSeparator=","
       styles={{ input: { textAlign: "right" } }}
-      value={value / 100}
-      onChange={(v) => setAssigned(month, categoryId, Math.round(Number(v || 0) * 100) as Cents)}
+      value={draft}
+      onChange={setDraft}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
     />
   );
 }

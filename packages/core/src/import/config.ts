@@ -22,6 +22,11 @@ export interface SourceConfig {
   exportDate?: ISODate;
 }
 
+/** sourceKey -> household lookup, built identically by several stages. */
+export function householdBySource(config: ImportConfig): Map<string, string> {
+  return new Map(config.sources.map((s) => [s.sourceKey, s.household]));
+}
+
 export interface ImportConfig {
   currency: CurrencyConfig;
   /** Name for the merged budget. */

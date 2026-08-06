@@ -7,8 +7,9 @@
 export type ISODate = string; // "2026-08-01"
 export type MonthKey = string; // "2026-08"
 
-const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
-const MONTH_KEY_RE = /^(\d{4})-(\d{2})$/;
+/** Canonical shapes — the single source of truth for validation (schema.ts). */
+export const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+export const MONTH_KEY_RE = /^(\d{4})-(\d{2})$/;
 
 const MONTH_ABBR: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
@@ -44,11 +45,6 @@ export function epochDay(date: ISODate): number {
   return Math.floor(utc / 86_400_000);
 }
 
-/** Absolute difference in days between two ISO dates. */
-export function daysBetween(a: ISODate, b: ISODate): number {
-  return Math.abs(epochDay(a) - epochDay(b));
-}
-
 /** Add (or subtract) whole months to a MonthKey. addMonths("2026-12", 1) => "2027-01". */
 export function addMonths(month: MonthKey, delta: number): MonthKey {
   const m = MONTH_KEY_RE.exec(month);
@@ -74,14 +70,6 @@ export function monthRange(start: MonthKey, end: MonthKey): MonthKey[] {
     cur = addMonths(cur, 1);
   }
   return out;
-}
-
-export function isISODate(s: string): boolean {
-  return ISO_DATE_RE.test(s);
-}
-
-export function isMonthKey(s: string): boolean {
-  return MONTH_KEY_RE.test(s);
 }
 
 function pad2(n: number): string {

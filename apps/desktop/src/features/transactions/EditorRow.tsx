@@ -4,6 +4,7 @@ import { DatePickerInput } from "@mantine/dates";
 import { useDisclosure } from "@mantine/hooks";
 import { IconCheck, IconMinus, IconPlus, IconX } from "@tabler/icons-react";
 import type { Cents, SplitLine, Transaction, Ulid } from "@cash-money/core";
+import { useApp } from "../../state";
 import { SplitEditorModal } from "./SplitEditorModal";
 import { registerTemplate } from "./layout";
 
@@ -51,6 +52,7 @@ export function EditorRow({
   onSubmit: (data: EditorSubmit) => void;
   onCancel: () => void;
 }) {
+  const { currency } = useApp();
   const [accountId, setAccountId] = useState<string | null>(single ?? initial?.accountId ?? null);
   const [date, setDate] = useState<Date | null>(initial ? fromIso(initial.date) : new Date());
   const [payee, setPayee] = useState(initial?.payee ?? "");
@@ -114,7 +116,7 @@ export function EditorRow({
       <NumberInput
         size="xs"
         placeholder="0.00"
-        prefix="€"
+        prefix={currency.symbol}
         decimalScale={2}
         hideControls
         min={0}

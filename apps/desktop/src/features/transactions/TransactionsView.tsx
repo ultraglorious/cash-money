@@ -23,7 +23,7 @@ import { SplitEditorModal } from "./SplitEditorModal";
 import { registerTemplate } from "./layout";
 
 export function TransactionsView() {
-  const { budget, projection, currency, view, accountName, categoryName, addTransaction, updateTransaction, approveTransaction, deleteTransaction, setSplits } = useApp();
+  const { budget, projection, currency, view, accountName, categoryName, addTransaction, updateTransaction, approveTransaction, approveTransactions, deleteTransaction, setSplits } = useApp();
   const [query, setQuery] = useState("");
   const [account, setAccount] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -162,9 +162,11 @@ export function TransactionsView() {
               <Text size="sm" c={amountColor(scheduledTotal)} fw={600}>{money(scheduledTotal, currency)}</Text>
               <Text size="xs" c="dimmed">— not yet counted in your budget</Text>
             </Group>
-            <Button size="xs" variant="light" color="orange" leftSection={<IconChecks size={14} />} onClick={() => scheduled.forEach((t) => approveTransaction(t.id))}>
-              Approve all
-            </Button>
+            <Tooltip label="Approves every scheduled transaction listed below" withArrow>
+              <Button size="xs" variant="light" color="orange" leftSection={<IconChecks size={14} />} onClick={() => approveTransactions(scheduled.map((t) => t.id))}>
+                Approve all
+              </Button>
+            </Tooltip>
           </Group>
           <Collapse in={schedOpen}>
             {scheduled.map((t) => (
@@ -172,12 +174,7 @@ export function TransactionsView() {
                 key={t.id}
                 style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px", borderTop: "1px solid var(--mantine-color-orange-2)", background: "light-dark(var(--mantine-color-orange-0), rgba(255,146,43,0.06))" }}
               >
-                <Text size="sm">{t.date}</Text>
-                {!single && <Text size="sm" lineClamp={1}>{accountName(t.accountId)}</Text>}
-                <Text size="sm" lineClamp={1}>{t.payee}</Text>
-                <Text size="sm" lineClamp={1} c={t.transfer ? "blue" : t.splits ? "grape" : undefined}>{categoryLabel(t)}</Text>
-                <Text size="sm" c="dimmed" lineClamp={1}>{t.memo}</Text>
-                <Text size="sm" fw={500} ta="right" c={amountColor(t.amount)}>{money(t.amount, currency)}</Text>
+                <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
                 <Badge size="xs" color="orange" variant="light">scheduled</Badge>
                 <Group gap={2} wrap="nowrap" justify="flex-end">
                   <Tooltip label="Approve — count it in the budget" withArrow>
@@ -229,12 +226,7 @@ export function TransactionsView() {
                     onDoubleClick={() => !t.splits && !t.transfer && setEditingId(t.id)}
                     style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--mantine-color-default-border)", cursor: !t.splits && !t.transfer ? "pointer" : "default" }}
                   >
-                    <Text size="sm">{t.date}</Text>
-                    {!single && <Text size="sm" lineClamp={1}>{accountName(t.accountId)}</Text>}
-                    <Text size="sm" lineClamp={1}>{t.payee}</Text>
-                    <Text size="sm" lineClamp={1} c={t.transfer ? "blue" : t.splits ? "grape" : undefined}>{categoryLabel(t)}</Text>
-                    <Text size="sm" c="dimmed" lineClamp={1}>{t.memo}</Text>
-                    <Text size="sm" fw={500} ta="right" c={amountColor(t.amount)}>{money(t.amount, currency)}</Text>
+                    <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
                     <div>
                       {!t.approved ? (
                         <Badge size="xs" color="orange" variant="light">scheduled</Badge>
@@ -272,6 +264,26 @@ export function TransactionsView() {
         onUnsplit={splitting?.splits ? () => { setSplits(splitting.id, undefined, splitting.splits?.[0]?.categoryId); setSplitting(null); } : undefined}
       />
     </Box>
+  );
+}
+
+/** The shared read-only cells of one register row (scheduled and approved lists). */
+function TxCells({ t, single, accountName, categoryLabel, currency }: {
+  t: Transaction;
+  single: Ulid | null;
+  accountName: (id: Ulid) => string;
+  categoryLabel: (t: Transaction) => string;
+  currency: ReturnType<typeof useApp>["currency"];
+}) {
+  return (
+    <>
+      <Text size="sm">{t.date}</Text>
+      {!single && <Text size="sm" lineClamp={1}>{accountName(t.accountId)}</Text>}
+      <Text size="sm" lineClamp={1}>{t.payee}</Text>
+      <Text size="sm" lineClamp={1} c={t.transfer ? "blue" : t.splits ? "grape" : undefined}>{categoryLabel(t)}</Text>
+      <Text size="sm" c="dimmed" lineClamp={1}>{t.memo}</Text>
+      <Text size="sm" fw={500} ta="right" c={amountColor(t.amount)}>{money(t.amount, currency)}</Text>
+    </>
   );
 }
 

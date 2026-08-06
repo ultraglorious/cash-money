@@ -7,6 +7,7 @@ import {
   categoriesByGroup,
   groupKindByCategory,
   mapCreditCards,
+  type CreditCardMap,
 } from "./creditCards.js";
 import type { CategoryMonthView, GroupMonthView, MonthView } from "./types.js";
 
@@ -34,6 +35,10 @@ import type { CategoryMonthView, GroupMonthView, MonthView } from "./types.js";
  * Ready-to-Assign automatically (the cash left the account but nothing holds it);
  * a credit overspend is simply left as card debt. Validated to the cent against
  * the exported plan numbers (activity and available match 100%).
+ *
+ * `computeProjection` orchestrates the phases below — each phase is a plain
+ * function with an explicit signature so it can be reasoned about (and tested)
+ * in isolation: gather → assignments → month range → available → Ready-to-Assign.
  */
 
 type Series = Map<MonthKey, number>;
@@ -46,66 +51,93 @@ function bump<K>(map: Map<K, Series>, key: K, month: MonthKey, delta: number): v
   s.set(month, (s.get(month) ?? 0) + delta);
 }
 
-export interface Projection {
-  months: MonthKey[];
-  monthView(month: MonthKey): MonthView;
-  /** All-time signed balance per account. */
-  accountBalances(): Map<Ulid, Cents>;
-  /** Low-level accessors (used by tests/oracle). */
-  assignedOf(categoryId: Ulid, month: MonthKey): Cents;
-  activityOf(categoryId: Ulid, month: MonthKey): Cents;
-  availableOf(categoryId: Ulid, month: MonthKey): Cents;
-  readyToAssignOf(month: MonthKey): Cents;
-  /** Ready-to-Assign split by household (sums to readyToAssignOf). */
-  readyToAssignByHousehold(month: MonthKey): Map<string, Cents>;
-  /** Households present, in stable order. */
+/** One spend/refund line, for the credit-card + overspend walk. */
+interface SpendEvent {
+  amount: number;
+  /** Set when the spend was made on a credit card. */
+  cardId: Ulid | undefined;
+  date: string;
+}
+
+interface CategoryPredicates {
+  isIncome(categoryId: Ulid): boolean;
+  isPayment(categoryId: Ulid): boolean;
+}
+
+// ---- Phase 0: household attribution -----------------------------------------
+
+interface HouseholdIndex {
+  hhOfAccount(id: Ulid): string;
+  hhOfCategory: Map<Ulid, string>;
+  /** Households present, ordered by budget.householdOrder then alphabetically. */
   households: string[];
 }
 
-export function computeProjection(budget: LoadedBudget): Projection {
-  const kind = groupKindByCategory(budget);
-  const cc = mapCreditCards(budget);
-  const catsByGroup = categoriesByGroup(budget);
+function buildHouseholdIndex(budget: LoadedBudget): HouseholdIndex {
+  const accountById = new Map(budget.accounts.map((a) => [a.id, a]));
+  const hhOfAccount = (id: Ulid): string => accountById.get(id)?.household ?? GENERAL_HH;
 
-  const isIncome = (categoryId: Ulid): boolean => kind.get(categoryId) === "income";
-  const isPayment = (categoryId: Ulid): boolean => cc.paymentCategoryIds.has(categoryId);
+  const groupHh = new Map<Ulid, string>(budget.groups.map((g) => [g.id, g.household ?? GENERAL_HH]));
+  const hhOfCategory = new Map<Ulid, string>();
+  for (const c of budget.categories) hhOfCategory.set(c.id, groupHh.get(c.groupId) ?? GENERAL_HH);
 
-  // --- Gather raw sums --------------------------------------------------------
-  const activity = new Map<Ulid, Series>(); // categorized spend (+ derived payment activity)
-  const cardTransfer = new Map<Ulid, Series>(); // signed transfer legs on each card
-  const balances = new Map<Ulid, number>(); // by transaction date, for account balances
+  const present = new Set<string>([
+    ...budget.groups.map((g) => g.household ?? GENERAL_HH),
+    ...budget.accounts.map((a) => a.household ?? GENERAL_HH),
+  ]);
+  const pref = budget.budget.householdOrder ?? [];
+  const households = [
+    ...pref.filter((h) => present.has(h)),
+    ...[...present].filter((h) => !pref.includes(h)).sort(),
+  ];
 
-  // Per (category, month) spend/refund events, for the credit-card + overspend walk.
-  interface SpendEvent {
-    amount: number;
-    cardId: Ulid | undefined; // set when the spend was made on a credit card
-    date: string;
-  }
-  const eventsByCatMonth = new Map<Ulid, Map<MonthKey, SpendEvent[]>>();
+  return { hhOfAccount, hhOfCategory, households };
+}
+
+// ---- Phase 1: gather raw sums from transactions ------------------------------
+
+interface RawSums {
+  /** Categorized spend per (category, month); payment activity is added later. */
+  activity: Map<Ulid, Series>;
+  /** Signed transfer legs on each card (payments into it). */
+  cardTransfer: Map<Ulid, Series>;
+  /** All-time signed balance per account (by transaction date). */
+  balances: Map<Ulid, number>;
+  /** Per (category, month) spend/refund events for the credit-card walk. */
+  events: Map<Ulid, Map<MonthKey, SpendEvent[]>>;
+  /**
+   * Per household, net cash-account movement each month (by effectiveDate).
+   * Ready-to-Assign is derived from this by conservation: a household's
+   * assignable money is the cash in its non-card accounts that isn't already
+   * sitting in an envelope.
+   */
+  cashDeltaByHh: Map<string, Series>;
+  monthsSeen: Set<MonthKey>;
+}
+
+function gatherTransactions(
+  budget: LoadedBudget,
+  cc: CreditCardMap,
+  { isIncome, isPayment }: CategoryPredicates,
+  hh: HouseholdIndex,
+): RawSums {
+  const activity = new Map<Ulid, Series>();
+  const cardTransfer = new Map<Ulid, Series>();
+  const balances = new Map<Ulid, number>();
+  const events = new Map<Ulid, Map<MonthKey, SpendEvent[]>>();
+  const cashDeltaByHh = new Map<string, Series>();
+  const monthsSeen = new Set<MonthKey>();
+
   const addEvent = (categoryId: Ulid, month: MonthKey, e: SpendEvent): void => {
-    let byMonth = eventsByCatMonth.get(categoryId);
-    if (!byMonth) eventsByCatMonth.set(categoryId, (byMonth = new Map()));
+    let byMonth = events.get(categoryId);
+    if (!byMonth) events.set(categoryId, (byMonth = new Map()));
     const arr = byMonth.get(month);
     if (arr) arr.push(e);
     else byMonth.set(month, [e]);
   };
 
-  // Per household, net cash-account movement each month (by effectiveDate). Ready-
-  // to-Assign is derived from this by conservation: a household's assignable money
-  // is the cash in its non-card accounts that isn't already sitting in an envelope.
-  const cashDeltaByHh = new Map<string, Series>();
-
-  const monthsSeen = new Set<MonthKey>();
   const onBudget = new Set<Ulid>();
   for (const a of budget.accounts) if (a.onBudget) onBudget.add(a.id);
-
-  const accountById = new Map(budget.accounts.map((a) => [a.id, a]));
-  const hhOfAccount = (id: Ulid): string => accountById.get(id)?.household ?? GENERAL_HH;
-  const hhOfCategory = new Map<Ulid, string>();
-  {
-    const groupHh = new Map<Ulid, string>(budget.groups.map((g) => [g.id, g.household ?? GENERAL_HH]));
-    for (const c of budget.categories) hhOfCategory.set(c.id, groupHh.get(c.groupId) ?? GENERAL_HH);
-  }
 
   for (const t of budget.transactions) {
     // Unapproved (scheduled/future) transactions are pending: they affect nothing.
@@ -123,7 +155,7 @@ export function computeProjection(budget: LoadedBudget): Projection {
     // Every cash-account movement (income, spending, transfers) feeds the
     // household's assignable-money pool. Card accounts are excluded: a card is
     // debt, tracked by its payment envelope, not assignable cash.
-    if (!onCard) bump(cashDeltaByHh, hhOfAccount(t.accountId), m, t.amount);
+    if (!onCard) bump(cashDeltaByHh, hh.hhOfAccount(t.accountId), m, t.amount);
 
     if (t.transfer) {
       if (onCard) bump(cardTransfer, t.accountId, m, t.amount); // a payment into the card
@@ -145,34 +177,57 @@ export function computeProjection(budget: LoadedBudget): Projection {
     }
   }
 
-  // --- Assignments ------------------------------------------------------------
+  return { activity, cardTransfer, balances, events, cashDeltaByHh, monthsSeen };
+}
+
+// ---- Phase 2: assignments ----------------------------------------------------
+
+/** Assigned per (category, month); adds assignment months to `monthsSeen`. */
+function gatherAssignments(budget: LoadedBudget, monthsSeen: Set<MonthKey>): Map<Ulid, Series> {
   const assigned = new Map<Ulid, Series>();
   for (const a of budget.assignments) {
     bump(assigned, a.categoryId, a.month, a.assigned);
     monthsSeen.add(a.month);
   }
+  return assigned;
+}
 
-  // --- Global month range -----------------------------------------------------
-  const sortedMonths = [...monthsSeen].sort(compareMonth);
-  const months =
-    sortedMonths.length === 0
-      ? []
-      : monthRange(sortedMonths[0]!, sortedMonths[sortedMonths.length - 1]!);
+/** The contiguous month range spanning everything seen. */
+function monthRangeOf(monthsSeen: ReadonlySet<MonthKey>): MonthKey[] {
+  const sorted = [...monthsSeen].sort(compareMonth);
+  return sorted.length === 0 ? [] : monthRange(sorted[0]!, sorted[sorted.length - 1]!);
+}
 
-  // --- Available per category (full credit-card + overspend model) ------------
-  // Phase 1 — spending envelopes. Walk each category's spends in date order. A card
-  // purchase moves only the COVERED amount (what the envelope could afford at that
-  // moment) into the card's payment envelope; the uncovered rest becomes debt on the
-  // card itself. At month end an envelope that is negative — whether from cash or
-  // card spending — restarts at zero (it never carries a red balance forward). The
-  // conservation-based Ready-to-Assign below then reflects a cash overspend
-  // automatically, while a credit overspend is simply left as card debt.
+// ---- Phase 3: available per category (credit-card + overspend model) ---------
+
+/**
+ * Computes each category's available series. Spending envelopes walk their
+ * spend events (phase 3a); the covered part of card purchases accumulates into
+ * each card's payment reserve, whose derived activity is ADDED to
+ * `raw.activity` (the payment envelopes' activity is derived, not transactional)
+ * before the payment envelopes themselves are rolled forward (phase 3b).
+ */
+function computeAvailable(
+  budget: LoadedBudget,
+  months: readonly MonthKey[],
+  assigned: Map<Ulid, Series>,
+  raw: RawSums,
+  cc: CreditCardMap,
+  { isIncome, isPayment }: CategoryPredicates,
+): Map<Ulid, Series> {
+  // Phase 3a — spending envelopes. Walk each category's spends in date order. A
+  // card purchase moves only the COVERED amount (what the envelope could afford at
+  // that moment) into the card's payment envelope; the uncovered rest becomes debt
+  // on the card itself. At month end an envelope that is negative — whether from
+  // cash or card spending — restarts at zero (it never carries a red balance
+  // forward). The conservation-based Ready-to-Assign then reflects a cash
+  // overspend automatically, while a credit overspend is simply left as card debt.
   const available = new Map<Ulid, Series>();
   const coveredByCard = new Map<Ulid, Series>(); // amount each card purchase set aside to pay
   for (const c of budget.categories) {
-    if (isIncome(c.id) || isPayment(c.id)) continue; // payment envelopes: phase 2
+    if (isIncome(c.id) || isPayment(c.id)) continue; // payment envelopes: phase 3b
     const s: Series = new Map();
-    const eventsByMonth = eventsByCatMonth.get(c.id);
+    const eventsByMonth = raw.events.get(c.id);
     let prev = 0; // ≥ 0: overspend never carries a negative here
     for (const m of months) {
       const assignedV = assigned.get(c.id)?.get(m) ?? 0;
@@ -212,48 +267,59 @@ export function computeProjection(budget: LoadedBudget): Projection {
   // Payment-envelope activity: the covered amounts moved in, less payments made.
   for (const [cardId, paymentCatId] of cc.paymentCategoryByCard) {
     const covered = coveredByCard.get(cardId);
-    const xfer = cardTransfer.get(cardId);
+    const xfer = raw.cardTransfer.get(cardId);
     const ms = new Set<MonthKey>([...(covered?.keys() ?? []), ...(xfer?.keys() ?? [])]);
-    for (const m of ms) bump(activity, paymentCatId, m, (covered?.get(m) ?? 0) - (xfer?.get(m) ?? 0));
+    for (const m of ms) bump(raw.activity, paymentCatId, m, (covered?.get(m) ?? 0) - (xfer?.get(m) ?? 0));
   }
 
-  // Phase 2 — payment envelopes carry their balance (money set aside to pay the card).
+  // Phase 3b — payment envelopes carry their balance (money set aside to pay the card).
   for (const c of budget.categories) {
     if (!isPayment(c.id)) continue;
     const s: Series = new Map();
     let prev = 0;
     for (const m of months) {
-      const val = prev + (assigned.get(c.id)?.get(m) ?? 0) + (activity.get(c.id)?.get(m) ?? 0);
+      const val = prev + (assigned.get(c.id)?.get(m) ?? 0) + (raw.activity.get(c.id)?.get(m) ?? 0);
       s.set(m, val);
       prev = val;
     }
     available.set(c.id, s);
   }
 
-  // --- Ready to Assign per household (conservation) ---------------------------
-  // Each household is its own money pool: its assignable money is the cash it holds
-  // (cumulative cash-account movement) minus everything already sitting in its
-  // envelopes. Card debt and its payment reserve net out, so the number is exactly
-  // "what's left to assign". The global banner is the sum across households.
-  const presentHouseholds = new Set<string>([
-    ...budget.groups.map((g) => g.household ?? GENERAL_HH),
-    ...budget.accounts.map((a) => a.household ?? GENERAL_HH),
-  ]);
-  const pref = budget.budget.householdOrder ?? [];
-  const households = [
-    ...pref.filter((h) => presentHouseholds.has(h)),
-    ...[...presentHouseholds].filter((h) => !pref.includes(h)).sort(),
-  ];
+  return available;
+}
+
+// ---- Phase 4: Ready-to-Assign by conservation ---------------------------------
+
+interface RtaResult {
+  rta: Series;
+  rtaByHh: Map<string, Series>;
+}
+
+/**
+ * Each household is its own money pool: its assignable money is the cash it
+ * holds (cumulative cash-account movement) minus everything already sitting in
+ * its envelopes. Card debt and its payment reserve net out, so the number is
+ * exactly "what's left to assign". The global banner is the sum across
+ * households.
+ */
+function computeReadyToAssign(
+  budget: LoadedBudget,
+  months: readonly MonthKey[],
+  hh: HouseholdIndex,
+  cashDeltaByHh: Map<string, Series>,
+  available: Map<Ulid, Series>,
+): RtaResult {
   // Σ available per (household, month).
   const availByHh = new Map<string, Series>();
   for (const c of budget.categories) {
     const s = available.get(c.id);
     if (!s) continue;
-    const h = hhOfCategory.get(c.id) ?? GENERAL_HH;
+    const h = hh.hhOfCategory.get(c.id) ?? GENERAL_HH;
     for (const [m, v] of s) bump(availByHh, h, m, v);
   }
+
   const rtaByHh = new Map<string, Series>();
-  for (const h of households) {
+  for (const h of hh.households) {
     const s: Series = new Map();
     const cash = cashDeltaByHh.get(h);
     const avail = availByHh.get(h);
@@ -265,25 +331,61 @@ export function computeProjection(budget: LoadedBudget): Projection {
     rtaByHh.set(h, s);
   }
 
-  // --- Global Ready to Assign (sum across household pools) --------------------
   const rta: Series = new Map();
   for (const m of months) {
     let sum = 0;
-    for (const h of households) sum += rtaByHh.get(h)?.get(m) ?? 0;
+    for (const h of hh.households) sum += rtaByHh.get(h)?.get(m) ?? 0;
     rta.set(m, sum);
   }
+
+  return { rta, rtaByHh };
+}
+
+// ---- Orchestrator -------------------------------------------------------------
+
+export interface Projection {
+  months: MonthKey[];
+  monthView(month: MonthKey): MonthView;
+  /** All-time signed balance per account. */
+  accountBalances(): Map<Ulid, Cents>;
+  /** Low-level accessors (used by tests/oracle). */
+  assignedOf(categoryId: Ulid, month: MonthKey): Cents;
+  activityOf(categoryId: Ulid, month: MonthKey): Cents;
+  availableOf(categoryId: Ulid, month: MonthKey): Cents;
+  readyToAssignOf(month: MonthKey): Cents;
+  /** Ready-to-Assign split by household (sums to readyToAssignOf). */
+  readyToAssignByHousehold(month: MonthKey): Map<string, Cents>;
+  /** Households present, in stable order. */
+  households: string[];
+}
+
+export function computeProjection(budget: LoadedBudget): Projection {
+  const kind = groupKindByCategory(budget);
+  const cc = mapCreditCards(budget);
+  const catsByGroup = categoriesByGroup(budget);
+  const predicates: CategoryPredicates = {
+    isIncome: (categoryId) => kind.get(categoryId) === "income",
+    isPayment: (categoryId) => cc.paymentCategoryIds.has(categoryId),
+  };
+
+  const hh = buildHouseholdIndex(budget);
+  const raw = gatherTransactions(budget, cc, predicates, hh);
+  const assigned = gatherAssignments(budget, raw.monthsSeen);
+  const months = monthRangeOf(raw.monthsSeen);
+  const available = computeAvailable(budget, months, assigned, raw, cc, predicates);
+  const { rta, rtaByHh } = computeReadyToAssign(budget, months, hh, raw.cashDeltaByHh, available);
 
   // --- Accessors --------------------------------------------------------------
   const assignedOf = (categoryId: Ulid, month: MonthKey): Cents =>
     (assigned.get(categoryId)?.get(month) ?? 0) as Cents;
   const activityOf = (categoryId: Ulid, month: MonthKey): Cents =>
-    (activity.get(categoryId)?.get(month) ?? 0) as Cents;
+    (raw.activity.get(categoryId)?.get(month) ?? 0) as Cents;
   const availableOf = (categoryId: Ulid, month: MonthKey): Cents =>
     (available.get(categoryId)?.get(month) ?? 0) as Cents;
   const readyToAssignOf = (month: MonthKey): Cents => (rta.get(month) ?? 0) as Cents;
   const readyToAssignByHousehold = (month: MonthKey): Map<string, Cents> => {
     const out = new Map<string, Cents>();
-    for (const h of households) out.set(h, (rtaByHh.get(h)?.get(month) ?? 0) as Cents);
+    for (const h of hh.households) out.set(h, (rtaByHh.get(h)?.get(month) ?? 0) as Cents);
     return out;
   };
 
@@ -326,7 +428,7 @@ export function computeProjection(budget: LoadedBudget): Projection {
 
   const accountBalances = (): Map<Ulid, Cents> => {
     const out = new Map<Ulid, Cents>();
-    for (const a of budget.accounts) out.set(a.id, (balances.get(a.id) ?? 0) as Cents);
+    for (const a of budget.accounts) out.set(a.id, (raw.balances.get(a.id) ?? 0) as Cents);
     return out;
   };
 
@@ -339,6 +441,6 @@ export function computeProjection(budget: LoadedBudget): Projection {
     availableOf,
     readyToAssignOf,
     readyToAssignByHousehold,
-    households,
+    households: hh.households,
   };
 }

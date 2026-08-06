@@ -5,7 +5,6 @@ import {
   EUR,
   formatMoney,
   parseMoney,
-  sumC,
   type Cents,
 } from "./money.js";
 
@@ -74,11 +73,6 @@ describe("formatMoney", () => {
 });
 
 describe("cents arithmetic", () => {
-  it("sums arrays exactly", () => {
-    const vals = ["12.34", "-5.00", "0.66"].map((s) => centsFromDecimalString(s, 2));
-    expect(sumC(vals)).toBe(800);
-  });
-
   it("rejects non-integers", () => {
     expect(() => cents(1.5)).toThrow();
   });

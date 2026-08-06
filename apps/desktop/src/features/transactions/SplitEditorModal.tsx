@@ -8,7 +8,8 @@ import { money } from "../../format";
 interface Line {
   key: string;
   categoryId: string | null;
-  amount: number | string; // euros, magnitude
+  /** Magnitude in integer cents — all bookkeeping is exact; euros only at the inputs. */
+  amount: number;
   memo: string;
 }
 
@@ -17,7 +18,9 @@ const BAR_COLORS = ["indigo", "teal", "orange", "grape", "cyan", "lime", "pink",
 /**
  * Split a payment across categories. Works on a draft `amount` (signed cents),
  * so it can be used both while entering a new transaction and to edit an
- * existing one. Amounts are magnitudes; the sign comes from the transaction.
+ * existing one. Line amounts are magnitudes in integer cents; the sign comes
+ * from the transaction — so "balanced" is an exact integer equality and the
+ * saved lines always sum to the transaction amount.
  */
 export function SplitEditorModal({
   opened,
@@ -36,13 +39,13 @@ export function SplitEditorModal({
 }) {
   const { budget, currency } = useApp();
   const sign = amount < 0 ? -1 : 1;
-  const target = Math.abs(amount) / 100;
+  const target = Math.abs(amount); // cents
   const [lines, setLines] = useState<Line[]>([]);
 
   useEffect(() => {
     if (!opened) return;
     if (initialSplits?.length) {
-      setLines(initialSplits.map((s) => ({ key: s.id, categoryId: s.categoryId ?? null, amount: Math.abs(s.amount) / 100, memo: s.memo })));
+      setLines(initialSplits.map((s) => ({ key: s.id, categoryId: s.categoryId ?? null, amount: Math.abs(s.amount), memo: s.memo })));
     } else {
       setLines([
         { key: newId(), categoryId: null, amount: target, memo: "" },
@@ -56,19 +59,19 @@ export function SplitEditorModal({
     .map((g) => ({ group: g.name, items: budget.categories.filter((c) => c.groupId === g.id).map((c) => ({ value: c.id, label: c.name })) }))
     .filter((grp) => grp.items.length > 0);
 
-  const sum = lines.reduce((s, l) => s + Number(l.amount || 0), 0);
+  const sum = lines.reduce((s, l) => s + l.amount, 0);
   const remaining = target - sum;
-  const balanced = Math.abs(remaining) < 0.005 && lines.length >= 2;
+  const balanced = remaining === 0 && lines.length >= 2;
 
-  const setAmount = (key: string, val: number) => {
+  const setAmount = (key: string, cents: number) => {
+    const v = Math.max(0, Math.min(Math.round(cents), target));
     setLines((ls) => {
       // Two-way binding when exactly two lines (so the slider + boxes agree).
       if (ls.length === 2) {
         const otherKey = ls.find((l) => l.key !== key)!.key;
-        const v = Math.max(0, Math.min(val, target));
-        return ls.map((l) => (l.key === key ? { ...l, amount: v } : l.key === otherKey ? { ...l, amount: Math.round((target - v) * 100) / 100 } : l));
+        return ls.map((l) => (l.key === key ? { ...l, amount: v } : l.key === otherKey ? { ...l, amount: target - v } : l));
       }
-      return ls.map((l) => (l.key === key ? { ...l, amount: val } : l));
+      return ls.map((l) => (l.key === key ? { ...l, amount: v } : l));
     });
   };
   const update = (key: string, patch: Partial<Line>) => setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -76,13 +79,13 @@ export function SplitEditorModal({
   const removeLine = (key: string) => setLines((ls) => (ls.length <= 2 ? ls : ls.filter((l) => l.key !== key)));
   const distributeEvenly = () => {
     const n = lines.length;
-    const each = Math.floor((target / n) * 100) / 100;
-    setLines((ls) => ls.map((l, i) => ({ ...l, amount: i === n - 1 ? Math.round((target - each * (n - 1)) * 100) / 100 : each })));
+    const each = Math.floor(target / n);
+    setLines((ls) => ls.map((l, i) => ({ ...l, amount: i === n - 1 ? target - each * (n - 1) : each })));
   };
 
   const save = () => {
     if (!balanced) return;
-    onSave(lines.map((l) => ({ id: newId(), amount: (sign * Math.round(Number(l.amount) * 100)) as Cents, memo: l.memo, ...(l.categoryId ? { categoryId: l.categoryId as Ulid } : {}) })));
+    onSave(lines.map((l) => ({ id: newId(), amount: (sign * l.amount) as Cents, memo: l.memo, ...(l.categoryId ? { categoryId: l.categoryId as Ulid } : {}) })));
   };
 
   return (
@@ -96,19 +99,19 @@ export function SplitEditorModal({
         {/* Proportion bar */}
         <Group gap={2} wrap="nowrap" style={{ height: 10 }}>
           {lines.map((l, i) => {
-            const pct = target > 0 ? (Number(l.amount || 0) / target) * 100 : 0;
+            const pct = target > 0 ? (l.amount / target) * 100 : 0;
             return <Box key={l.key} style={{ width: `${Math.max(0, pct)}%`, height: "100%", borderRadius: 3, background: `var(--mantine-color-${BAR_COLORS[i % BAR_COLORS.length]}-6)` }} />;
           })}
         </Group>
 
         {lines.length === 2 && (
           <Slider
-            value={Number(lines[0]!.amount) || 0}
+            value={lines[0]!.amount}
             onChange={(v) => setAmount(lines[0]!.key, v)}
             min={0}
             max={target}
-            step={0.01}
-            label={(v) => `€${v.toFixed(2)}`}
+            step={1}
+            label={(v) => money(v, currency)}
           />
         )}
 
@@ -116,7 +119,16 @@ export function SplitEditorModal({
           <Group key={l.key} align="flex-end" wrap="nowrap">
             <Box w={10} h={30} style={{ borderRadius: 3, background: `var(--mantine-color-${BAR_COLORS[i % BAR_COLORS.length]}-6)` }} />
             <Select label={i === 0 ? "Category" : undefined} placeholder="Category" data={options} value={l.categoryId} onChange={(v) => update(l.key, { categoryId: v })} searchable style={{ flex: 2 }} comboboxProps={{ withinPortal: true }} />
-            <NumberInput label={i === 0 ? "Amount" : undefined} prefix="€" decimalScale={2} fixedDecimalScale min={0} value={l.amount} onChange={(v) => setAmount(l.key, Number(v || 0))} style={{ flex: 1 }} />
+            <NumberInput
+              label={i === 0 ? "Amount" : undefined}
+              prefix={currency.symbol}
+              decimalScale={2}
+              fixedDecimalScale
+              min={0}
+              value={l.amount / 100}
+              onChange={(v) => setAmount(l.key, Number(v || 0) * 100)}
+              style={{ flex: 1 }}
+            />
             <TextInput label={i === 0 ? "Memo" : undefined} value={l.memo} onChange={(e) => update(l.key, { memo: e.currentTarget.value })} style={{ flex: 1 }} />
             <ActionIcon color="red" variant="subtle" onClick={() => removeLine(l.key)} disabled={lines.length <= 2} aria-label="Remove line"><IconTrash size={16} /></ActionIcon>
           </Group>
@@ -124,7 +136,9 @@ export function SplitEditorModal({
 
         <Group justify="space-between">
           <Button variant="subtle" leftSection={<IconPlus size={16} />} onClick={addLine}>Add split</Button>
-          <Text size="sm" c={balanced ? "teal" : "red"}>{balanced ? "Balanced" : `${remaining > 0 ? "Unassigned" : "Over"}: €${Math.abs(remaining).toFixed(2)}`}</Text>
+          <Text size="sm" c={balanced ? "teal" : "red"}>
+            {balanced ? "Balanced" : `${remaining > 0 ? "Unassigned" : "Over"}: ${money(Math.abs(remaining), currency)}`}
+          </Text>
         </Group>
 
         <Group justify="space-between">

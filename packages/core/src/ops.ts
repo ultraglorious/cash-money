@@ -288,6 +288,15 @@ export function approveTransaction(b: LoadedBudget, txId: Ulid): LoadedBudget {
   return updateTransaction(b, txId, { approved: true });
 }
 
+/** Approve many scheduled transactions in one pass (one recompute, not N). */
+export function approveTransactions(b: LoadedBudget, txIds: readonly Ulid[]): LoadedBudget {
+  const ids = new Set(txIds);
+  return {
+    ...b,
+    transactions: b.transactions.map((t) => (ids.has(t.id) && !t.approved ? { ...t, approved: true } : t)),
+  };
+}
+
 /**
  * Set (or clear) a transaction's splits. Splits must sum to the transaction
  * amount; when set, the top-level categoryId is cleared. Passing undefined

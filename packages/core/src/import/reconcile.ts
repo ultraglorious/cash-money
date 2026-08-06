@@ -1,6 +1,6 @@
 import type { Ulid } from "../ids.js";
 import type { Transaction } from "../model/types.js";
-import { fold } from "./text.js";
+import { SEP, fold } from "./text.js";
 
 /**
  * Reconciles a freshly-staged transaction set against what's already stored,
@@ -140,7 +140,7 @@ export function mergeStatement(
     if (t.source?.identity) {
       byIdentity.set(t.source.identity, i);
     } else if (t.accountId === accountId) {
-      const key = [t.date, t.amount, fold(t.payee), fold(t.memo)].join("␟");
+      const key = [t.date, t.amount, fold(t.payee), fold(t.memo)].join(SEP);
       (legacyByContent.get(key) ?? legacyByContent.set(key, []).get(key)!).push(i);
     }
   });
@@ -161,7 +161,7 @@ export function mergeStatement(
       }
       continue;
     }
-    const key = [inc.date, inc.amount, fold(inc.payee), fold(inc.memo)].join("␟");
+    const key = [inc.date, inc.amount, fold(inc.payee), fold(inc.memo)].join(SEP);
     const legacyIdx = legacyByContent.get(key)?.shift();
     if (legacyIdx !== undefined) {
       legacyMatched++;
