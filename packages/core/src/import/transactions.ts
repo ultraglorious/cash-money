@@ -64,6 +64,7 @@ function makeSimple(r: NormTxn): StagedTxn {
     account: r.account,
     accountFold: r.accountFold,
     date: r.date,
+    bookDate: r.bookDate,
     effectiveDate: r.date,
     epochDay: r.epochDay,
     approved: r.approved,

@@ -40,6 +40,8 @@ export interface StagedTxn {
   account: string;
   accountFold: string;
   date: ISODate;
+  /** The source's booking date, when `date` is an extracted true date. */
+  bookDate?: ISODate;
   effectiveDate: ISODate;
   epochDay: number;
   approved: boolean;

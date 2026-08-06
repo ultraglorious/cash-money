@@ -20,11 +20,14 @@ export { parseCsv, parseDateAs, mapRegisterRows, type ParsedCsv, type NormTxn, t
 export * from "./import/config.js";
 export { stageImport, type SourceInput, type ImportReport, type StagingResult } from "./import/pipeline.js";
 export { mergeImport, type MergeImportReport, type MergeImportResult } from "./import/merge.js";
-export { stageStatement, type StatementOptions, type StatementReport, type StatementResult } from "./import/statement.js";
 export {
-  mergeStatement,
-  reconcileTransactions,
-  type ReconcileReport,
-  type ReconcileResult,
-  type StatementMergeReport,
-} from "./import/reconcile.js";
+  buildStatementTransactions,
+  reconcileStatement,
+  type ChurnPair,
+  type MatchKind,
+  type StatementMatch,
+  type StatementOptions,
+  type StatementReconcile,
+  type StatementRow,
+} from "./import/statement.js";
+export { reconcileTransactions, type ReconcileReport, type ReconcileResult } from "./import/reconcile.js";

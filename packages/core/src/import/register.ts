@@ -73,6 +73,8 @@ export interface NormTxn {
   account: string;
   accountFold: string;
   date: ISODate;
+  /** The date column's value, when `date` was replaced by an extracted true date. */
+  bookDate?: ISODate;
   epochDay: number;
   /** Whether the transaction is approved (false for future/scheduled rows). */
   approved: boolean;
@@ -162,6 +164,7 @@ export function mapRegisterRows(
   const transferRe =
     format.transfer?.mode === "payeePattern" ? new RegExp(format.transfer.pattern, "i") : undefined;
   const splitRe = format.splitMemoPattern ? new RegExp(format.splitMemoPattern, "i") : undefined;
+  const trueDateRe = format.trueDate ? new RegExp(format.trueDate.pattern, "i") : undefined;
   const sem = format.semantics;
   const incomeGroupFold = sem?.incomeGroup ? fold(sem.incomeGroup) : undefined;
   const incomeCategoryFold = sem?.incomeCategory ? fold(sem.incomeCategory) : undefined;
@@ -174,7 +177,22 @@ export function mapRegisterRows(
   parsed.rows.forEach((row, i) => {
     const sourceRow = i + 2; // row 1 is the header line
     try {
-      const date = parseDateAs(row[format.date.column] ?? "", format.date.format);
+      const columnDate = parseDateAs(row[format.date.column] ?? "", format.date.format);
+      // True-date extraction: some banks book days late but embed the real
+      // transaction date in the description. On a match, the extracted date
+      // becomes THE date and the column value is kept as bookDate.
+      let date = columnDate;
+      let bookDate: ISODate | undefined;
+      if (trueDateRe && format.memoColumn) {
+        const m = trueDateRe.exec(row[format.memoColumn] ?? "");
+        if (m?.[1]) {
+          const extracted = parseDateAs(m[1], format.trueDate!.format);
+          if (extracted !== columnDate) {
+            date = extracted;
+            bookDate = columnDate;
+          }
+        }
+      }
 
       let amount: number;
       if (format.amount.mode === "signed") {
@@ -239,6 +257,7 @@ export function mapRegisterRows(
         account,
         accountFold: fold(account),
         date,
+        bookDate,
         epochDay: epochDay(date),
         approved: opts.exportDate ? date <= opts.exportDate : true,
         payee,

@@ -17,20 +17,24 @@ import {
   Text,
   TextInput,
   Title,
+  Tooltip,
 } from "@mantine/core";
 import { IconAlertTriangle, IconFileImport, IconTrash } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  buildStatementTransactions,
+  guessFormat,
   mergeImport,
   newId,
   parseCsv,
+  reconcileStatement,
   stageImport,
-  stageStatement,
   type CurrencyConfig,
   type ImportConfig,
+  type RegisterFormat,
   type SavedFormat,
   type StagingResult,
-  type Transaction,
+  type StatementReconcile,
   type Ulid,
 } from "@cash-money/core";
 import { useApp } from "../../state";
@@ -323,13 +327,6 @@ interface ParsedCsvFile {
   rowCount: number;
 }
 
-interface StatementPreview {
-  merged: Transaction[];
-  added: Transaction[];
-  alreadyPresent: number;
-  errors: string[];
-}
-
 function StatementPane({ onDone }: { onDone: () => void }) {
   const app = useApp();
   const [parsed, setParsed] = useState<ParsedCsvFile | null>(null);
@@ -337,9 +334,11 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   const [saved, setSaved] = useState<SavedFormat[]>([]);
   const [formatChoice, setFormatChoice] = useState<string>(NEW_MAPPING);
   const [mapping, setMapping] = useState<MappingState>(EMPTY_MAPPING);
+  const [trueDate, setTrueDate] = useState<RegisterFormat["trueDate"]>(undefined);
   const [saveMapping, setSaveMapping] = useState(false);
   const [mappingName, setMappingName] = useState("");
-  const [preview, setPreview] = useState<StatementPreview | null>(null);
+  const [result, setResult] = useState<StatementReconcile | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set()); // sourceRow keys
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -350,13 +349,16 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   const pick = async () => {
     setError(null);
     try {
-      const selected = await open({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
-      if (!selected || Array.isArray(selected)) return;
-      const text = await readTextAbs(selected);
+      const selectedFile = await open({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
+      if (!selectedFile || Array.isArray(selectedFile)) return;
+      const text = await readTextAbs(selectedFile);
       const { headers, rows } = parseCsv(text);
-      setParsed({ fileName: selected.split(/[/\\]/).pop() ?? selected, text, headers, rowCount: rows.length });
-      setPreview(null);
-      if (formatChoice === NEW_MAPPING) setMapping(stateFromGuess(headers));
+      setParsed({ fileName: selectedFile.split(/[/\\]/).pop() ?? selectedFile, text, headers, rowCount: rows.length });
+      setResult(null);
+      if (formatChoice === NEW_MAPPING) {
+        setMapping(stateFromGuess(headers));
+        setTrueDate(guessFormat(headers, rows.slice(0, 5)).trueDate);
+      }
       if (!accountId) setAccountId(app.budget.accounts[0]?.id ?? null);
     } catch (e) {
       setError(`Could not read the file: ${String(e)}`);
@@ -366,17 +368,26 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   const chooseFormat = (id: string | null) => {
     const choice = id ?? NEW_MAPPING;
     setFormatChoice(choice);
-    setPreview(null);
+    setResult(null);
     if (choice === NEW_MAPPING) {
-      if (parsed) setMapping(stateFromGuess(parsed.headers));
+      if (parsed) {
+        setMapping(stateFromGuess(parsed.headers));
+        const { rows } = parseCsv(parsed.text);
+        setTrueDate(guessFormat(parsed.headers, rows.slice(0, 5)).trueDate);
+      }
       return;
     }
     const f = saved.find((s) => s.format.id === choice)?.format;
-    if (f) setMapping(stateFromFormat(f));
+    if (f) {
+      setMapping(stateFromFormat(f));
+      setTrueDate(f.trueDate);
+    }
   };
 
-  const currentFormat = () =>
-    buildFormat(mapping, formatChoice === NEW_MAPPING ? "adhoc:bank-statement" : formatChoice, mappingName || "Bank statement");
+  const currentFormat = (): RegisterFormat => ({
+    ...buildFormat(mapping, formatChoice === NEW_MAPPING ? "adhoc:bank-statement" : formatChoice, mappingName || "Bank statement"),
+    ...(trueDate ? { trueDate } : {}),
+  });
 
   const runPreview = async () => {
     if (!parsed || !accountId) return;
@@ -384,28 +395,29 @@ function StatementPane({ onDone }: { onDone: () => void }) {
     try {
       const format = currentFormat();
       const sourceKey = await app.statementSourceKey(accountId as Ulid, format.id);
-      const { merged, report } = stageStatement(app.budget, parsed.text, format, {
+      const r = reconcileStatement(app.budget, parsed.text, format, {
         sourceKey,
         accountId: accountId as Ulid,
         currency: app.currency,
       });
-      setPreview({
-        merged,
-        added: merged.slice(app.budget.transactions.length),
-        alreadyPresent: report.matched + report.legacyMatched,
-        errors: report.errors,
-      });
+      setResult(r);
+      setSelected(new Set(r.toAdd.map((row) => row.sourceRow))); // all checked by default
     } catch (e) {
       setError(String(e));
-      setPreview(null);
+      setResult(null);
     }
   };
 
   const commit = async () => {
-    if (!accountId || !preview) return;
-    app.setTransactions(preview.merged);
+    if (!accountId || !result) return;
+    const rows = result.toAdd.filter((r) => selected.has(r.sourceRow));
+    if (rows.length > 0) {
+      const format = currentFormat();
+      const sourceKey = await app.statementSourceKey(accountId as Ulid, format.id);
+      app.addTransactions(buildStatementTransactions(rows, { sourceKey, accountId: accountId as Ulid, currency: app.currency }));
+    }
     if (saveMapping && formatChoice === NEW_MAPPING && mappingName.trim()) {
-      const format = buildFormat(mapping, newId(), mappingName.trim());
+      const format: RegisterFormat = { ...buildFormat(mapping, newId(), mappingName.trim()), ...(trueDate ? { trueDate } : {}) };
       await app.saveFormats([...saved, { format, lastUsed: today() }]).catch(() => undefined);
     }
     app.setView({ kind: "account", accountId: accountId as Ulid });
@@ -432,10 +444,15 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       {parsed && (
         <>
           <Group grow>
-            <Select label="Import into account" data={app.budget.accounts.map((a) => ({ value: a.id, label: a.name }))} value={accountId} onChange={setAccountId} searchable />
+            <Select label="Reconcile against account" data={app.budget.accounts.map((a) => ({ value: a.id, label: a.name }))} value={accountId} onChange={setAccountId} searchable />
             <Select label="Column mapping" data={formatOptions} value={formatChoice} onChange={chooseFormat} allowDeselect={false} />
           </Group>
-          <FormatMappingForm headers={parsed.headers} value={mapping} onChange={(m) => { setMapping(m); setPreview(null); }} />
+          <FormatMappingForm headers={parsed.headers} value={mapping} onChange={(m) => { setMapping(m); setResult(null); }} />
+          {trueDate && (
+            <Text size="xs" c="teal">
+              ✓ True transaction dates detected in the description — matching uses them instead of booking dates.
+            </Text>
+          )}
           {formatChoice === NEW_MAPPING && (
             <Group align="flex-end">
               <Checkbox label="Save this mapping for next time" checked={saveMapping} onChange={(e) => setSaveMapping(e.currentTarget.checked)} />
@@ -445,46 +462,99 @@ function StatementPane({ onDone }: { onDone: () => void }) {
             </Group>
           )}
           <Group>
-            <Button variant="light" onClick={() => void runPreview()} disabled={!canPreview}>Preview</Button>
+            <Button variant="light" onClick={() => void runPreview()} disabled={!canPreview}>Reconcile</Button>
           </Group>
         </>
       )}
 
-      {preview && (
-        <Paper withBorder p="md" radius="md">
-          <Group gap="xs" mb="xs">
-            <Badge color="teal" variant="light">{preview.added.length} to import</Badge>
-            {preview.alreadyPresent > 0 && <Badge color="gray" variant="light">{preview.alreadyPresent} already present</Badge>}
-            {preview.errors.length > 0 && <Badge color="red" variant="light">{preview.errors.length} errors</Badge>}
-          </Group>
-          {preview.errors.length > 0 && (
-            <Alert color="yellow" mb="xs" icon={<IconAlertTriangle size={16} />}>
-              {preview.errors.slice(0, 4).join("; ")}{preview.errors.length > 4 ? " …" : ""}
-            </Alert>
-          )}
+      {result && (
+        <ReconcileView
+          result={result}
+          currency={app.currency}
+          selected={selected}
+          setSelected={setSelected}
+          onCommit={() => void commit()}
+        />
+      )}
+    </Stack>
+  );
+}
+
+function ReconcileView({ result, currency, selected, setSelected, onCommit }: {
+  result: StatementReconcile;
+  currency: CurrencyConfig;
+  selected: Set<number>;
+  setSelected: (s: Set<number>) => void;
+  onCommit: () => void;
+}) {
+  const matchedRows = result.matches.reduce((a, m) => a + m.rows.length, 0);
+  const combos = result.matches.filter((m) => m.kind === "combo");
+  const wides = result.matches.filter((m) => m.kind === "wide");
+  const ties = result.matches.filter((m) => m.interchangeable);
+  const toggle = (row: number) => {
+    const next = new Set(selected);
+    next.has(row) ? next.delete(row) : next.add(row);
+    setSelected(next);
+  };
+  const netAgrees = result.check.statementNet === result.check.budgetNet;
+
+  return (
+    <Paper withBorder p="md" radius="md">
+      <Title order={5} mb="xs">Reconciliation</Title>
+      <Group gap="xs" mb="xs">
+        <Badge color="teal" variant="light">{matchedRows} matched</Badge>
+        {combos.length > 0 && <Badge color="cyan" variant="light">{combos.length} same-visit combos</Badge>}
+        {wides.length > 0 && <Badge color="indigo" variant="light">{wides.length} wide-window</Badge>}
+        {ties.length > 0 && <Badge color="gray" variant="light">{ties.length} interchangeable</Badge>}
+        {result.churn.length > 0 && <Badge color="grape" variant="light">{result.churn.length} charge+refund skipped</Badge>}
+        <Badge color={result.toAdd.length > 0 ? "orange" : "gray"} variant="light">{result.toAdd.length} missing from budget</Badge>
+        {result.unclaimedBudget.length > 0 && (
+          <Tooltip label="Budget rows near the statement window no statement row claimed — usually edge-of-window noise." withArrow>
+            <Badge color="gray" variant="outline">{result.unclaimedBudget.length} unclaimed in budget</Badge>
+          </Tooltip>
+        )}
+        {result.errors.length > 0 && <Badge color="red" variant="light">{result.errors.length} parse errors</Badge>}
+      </Group>
+
+      <Text size="xs" c={netAgrees ? "teal" : "dimmed"}>
+        Net change {result.check.from} – {result.check.to}: statement {money(result.check.statementNet, currency)} vs budget {money(result.check.budgetNet, currency)}
+        {netAgrees ? " ✓" : " (will converge as missing rows are added)"}
+      </Text>
+
+      {result.errors.length > 0 && (
+        <Alert color="yellow" mt="xs" icon={<IconAlertTriangle size={16} />}>
+          {result.errors.slice(0, 4).join("; ")}{result.errors.length > 4 ? " …" : ""}
+        </Alert>
+      )}
+
+      {result.toAdd.length > 0 && (
+        <>
+          <Divider my="sm" label="Missing from the budget — tick what to add" />
           <Table verticalSpacing="xs">
             <Table.Thead>
-              <Table.Tr><Table.Th>Date</Table.Th><Table.Th>Payee</Table.Th><Table.Th ta="right">Amount</Table.Th></Table.Tr>
+              <Table.Tr><Table.Th w={36} /><Table.Th>Date</Table.Th><Table.Th>Payee</Table.Th><Table.Th ta="right">Amount</Table.Th></Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {preview.added.slice(0, 8).map((t) => (
-                <Table.Tr key={t.id}>
-                  <Table.Td>{t.date}</Table.Td>
-                  <Table.Td><Text size="sm" lineClamp={1}>{t.payee}</Text></Table.Td>
-                  <Table.Td ta="right"><Text size="sm" c={t.amount < 0 ? "red" : "teal"}>{money(t.amount, app.currency)}</Text></Table.Td>
+              {result.toAdd.map((r) => (
+                <Table.Tr key={r.sourceRow}>
+                  <Table.Td><Checkbox checked={selected.has(r.sourceRow)} onChange={() => toggle(r.sourceRow)} aria-label="Include row" /></Table.Td>
+                  <Table.Td>{r.date}</Table.Td>
+                  <Table.Td><Text size="sm" lineClamp={1}>{r.payee}</Text></Table.Td>
+                  <Table.Td ta="right"><Text size="sm" c={r.amount < 0 ? "red" : "teal"}>{money(r.amount, currency)}</Text></Table.Td>
                 </Table.Tr>
               ))}
             </Table.Tbody>
           </Table>
-          {preview.added.length > 8 && <Text size="xs" c="dimmed" mt={4}>…and {preview.added.length - 8} more</Text>}
-          <Divider my="md" />
-          <Group justify="flex-end">
-            <Button color="teal" onClick={() => void commit()} disabled={preview.added.length === 0}>
-              Import {preview.added.length} transaction{preview.added.length === 1 ? "" : "s"}
-            </Button>
-          </Group>
-        </Paper>
+        </>
       )}
-    </Stack>
+
+      <Divider my="md" />
+      <Group justify="space-between">
+        <Text size="xs" c="dimmed">Matched rows are left untouched; only ticked rows are added.</Text>
+        <Button color="teal" onClick={onCommit}>
+          {selected.size > 0 ? `Add ${selected.size} transaction${selected.size === 1 ? "" : "s"}` : "Done (add nothing)"}
+        </Button>
+      </Group>
+    </Paper>
   );
 }
