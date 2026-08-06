@@ -450,7 +450,8 @@ function StatementPane({ onDone }: { onDone: () => void }) {
           <FormatMappingForm headers={parsed.headers} value={mapping} onChange={(m) => { setMapping(m); setResult(null); }} />
           {trueDate && (
             <Text size="xs" c="teal">
-              ✓ True transaction dates detected in the description — matching uses them instead of booking dates.
+              ✓ True transaction dates detected inside the description. Keep the date column on the bank's
+              booking-date column — the real transaction date is extracted automatically and used for matching.
             </Text>
           )}
           {formatChoice === NEW_MAPPING && (

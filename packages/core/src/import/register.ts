@@ -31,17 +31,19 @@ export function parseCsv(text: string): ParsedCsv {
 
 /**
  * Parse a date cell in the declared layout into an ISO date. Accepts `-`, `/`,
- * or `.` separators and 2-digit years (assumed 20xx). Throws on malformed input
- * — callers collect the error per row.
+ * or `.` separators and 2-digit years (assumed 20xx). The date may sit anywhere
+ * inside the cell (some sources embed it in free text — e.g. a description
+ * column mapped as the date); the first date-shaped token wins. Throws on
+ * cells containing no date — callers collect the error per row.
  */
 export function parseDateAs(raw: string, format: ImportDateFormat): ISODate {
   const s = raw.trim();
   if (format === "iso") {
-    const m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s);
+    const m = /(?<!\d)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)/.exec(s);
     if (!m) throw new Error(`Bad ISO date: ${JSON.stringify(raw)}`);
     return `${m[1]}-${pad(m[2]!)}-${pad(m[3]!)}`;
   }
-  const m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/.exec(s);
+  const m = /(?<!\d)(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(?!\d)/.exec(s);
   if (!m) throw new Error(`Bad date: ${JSON.stringify(raw)}`);
   const a = Number(m[1]);
   const b = Number(m[2]);
