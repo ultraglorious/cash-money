@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from "react";
-import { ActionIcon, Badge, Box, Button, Collapse, Group, Menu, Select, Text, TextInput, Title, Tooltip } from "@mantine/core";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ActionIcon, Badge, Box, Button, Checkbox, Collapse, Group, Menu, Select, Text, TextInput, Title, Tooltip } from "@mantine/core";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   IconArrowsSplit,
@@ -10,20 +10,27 @@ import {
   IconClock,
   IconDots,
   IconPlus,
+  IconRepeat,
   IconSearch,
   IconSelector,
+  IconTags,
   IconTrash,
 } from "@tabler/icons-react";
-import { newId, type Cents, type Transaction, type Ulid } from "@cash-money/core";
+import { newId, ops, type Cents, type Transaction, type Ulid } from "@cash-money/core";
 import { useApp } from "../../state";
+import { categoryOptions } from "../../categoryOptions";
 import { money } from "../../format";
 import { amountColor } from "../../theme";
 import { EditorRow, type EditorSubmit } from "./EditorRow";
+import { PayeesModal } from "./PayeesModal";
 import { SplitEditorModal } from "./SplitEditorModal";
 import { registerTemplate } from "./layout";
 
+const todayIso = () => new Date().toISOString().slice(0, 10);
+const FREQ_LABEL: Record<string, string> = { weekly: "weekly", biweekly: "2-weekly", monthly: "monthly", yearly: "yearly" };
+
 export function TransactionsView() {
-  const { budget, projection, currency, view, accountName, categoryName, addTransaction, updateTransaction, approveTransaction, approveTransactions, deleteTransaction, setSplits } = useApp();
+  const { budget, projection, currency, view, accountName, categoryName, addTransaction, updateTransaction, approveTransaction, approveTransactions, deleteTransaction, deleteTransactions, setClearedStatus, setSplits } = useApp();
   const [query, setQuery] = useState("");
   const [account, setAccount] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -31,6 +38,8 @@ export function TransactionsView() {
   const [splitting, setSplitting] = useState<Transaction | null>(null);
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" } | null>(null);
   const [schedOpen, setSchedOpen] = useState(true);
+  const [payeesOpen, setPayeesOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<Ulid>>(new Set());
 
   const single = view.kind === "account" ? (view.accountId as Ulid) : null;
   const activeAccount = single ?? (account as Ulid | null);
@@ -54,10 +63,7 @@ export function TransactionsView() {
     return m;
   }, [budget]);
 
-  const categoryData = budget.groups
-    .filter((g) => g.kind !== "income")
-    .map((g) => ({ group: g.name, items: budget.categories.filter((c) => c.groupId === g.id).map((c) => ({ value: c.id, label: c.name })) }))
-    .filter((grp) => grp.items.length > 0);
+  const categoryData = categoryOptions(budget);
   const accountData = budget.accounts.map((a) => ({ value: a.id, label: a.name }));
 
   const cycleSort = (col: string) => setSort((s) => (s?.col !== col ? { col, dir: "asc" } : s.dir === "asc" ? { col, dir: "desc" } : null));
@@ -105,9 +111,39 @@ export function TransactionsView() {
   const title = single ? accountName(single) : "All Accounts";
   const balance = single ? projection.accountBalances().get(single) ?? 0 : null;
   const reconciledThrough = single ? budget.accounts.find((a) => a.id === single)?.reconciledThrough : undefined;
+  // Cleared = what the bank shows; working (the big number) also counts
+  // uncleared rows you've entered — money already spoken for.
+  const clearedBalance = useMemo(
+    () =>
+      single
+        ? budget.transactions
+            .filter((t) => t.accountId === single && t.approved && t.cleared !== "uncleared")
+            .reduce((s, t) => s + t.amount, 0)
+        : null,
+    [budget, single],
+  );
+
+  // ---- Multi-select ----------------------------------------------------------
+  useEffect(() => setSelected(new Set()), [activeAccount]); // a selection never outlives its account view
+  const toggleSelect = (id: Ulid) => {
+    setSelected((s) => {
+      const next = new Set(s);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+  const selectedIds = [...selected];
+  const selectedTxs = useMemo(() => budget.transactions.filter((t) => selected.has(t.id)), [budget, selected]);
+  const selectedUnapproved = selectedTxs.filter((t) => !t.approved).map((t) => t.id);
+  const bulk = (fn: (ids: Ulid[]) => void) => {
+    fn(selectedIds);
+    setSelected(new Set());
+  };
 
   const addFromEditor = (data: EditorSubmit) => {
-    addTransaction({
+    // Future-dated entries are scheduled: they wait for approval on their day.
+    const approved = data.date <= todayIso();
+    const tx: Transaction = {
       id: newId(),
       accountId: data.accountId,
       date: data.date,
@@ -115,10 +151,19 @@ export function TransactionsView() {
       payee: data.payee,
       memo: data.memo,
       amount: data.amount,
-      cleared: data.cleared,
-      approved: true,
+      cleared: approved ? data.cleared : "uncleared",
+      approved,
+      ...(data.recurrence ? { recurrence: data.recurrence } : {}),
       ...(data.splits ? { splits: data.splits } : data.categoryId ? { categoryId: data.categoryId } : {}),
-    });
+    };
+    addTransaction(tx);
+    // A repeating entry dated today (or earlier) enters the register right
+    // away, so its next occurrence must be scheduled here; future-dated ones
+    // get theirs when approved.
+    if (approved && tx.recurrence) {
+      const next = ops.scheduledSuccessor(tx);
+      if (next) addTransaction(next);
+    }
     setAdding(false);
   };
   const saveEdit = (t: Transaction, data: EditorSubmit) => {
@@ -131,6 +176,7 @@ export function TransactionsView() {
       memo: data.memo,
       amount: data.amount,
       cleared: data.cleared,
+      recurrence: data.recurrence,
       ...(data.splits ? { splits: data.splits, categoryId: undefined } : { categoryId: data.categoryId, splits: undefined }),
     });
     setEditingId(null);
@@ -141,7 +187,16 @@ export function TransactionsView() {
       <Group justify="space-between" mb="sm">
         <Group gap="sm" align="baseline">
           <Title order={3}>{title}</Title>
-          {balance !== null && <Text size="lg" fw={600} c={amountColor(balance)}>{money(balance, currency)}</Text>}
+          {balance !== null && (
+            <Tooltip label="Working balance — includes uncleared transactions you've already entered." withArrow>
+              <Text size="lg" fw={600} c={amountColor(balance)}>{money(balance, currency)}</Text>
+            </Tooltip>
+          )}
+          {clearedBalance !== null && clearedBalance !== balance && (
+            <Tooltip label="Cleared balance — only cleared and reconciled rows; this is what the bank shows." withArrow>
+              <Text size="xs" c="dimmed">cleared {money(clearedBalance, currency)}</Text>
+            </Tooltip>
+          )}
           {reconciledThrough && (
             <Tooltip label="A bank statement confirmed this account's transactions up to this date." withArrow>
               <Text size="xs" c="dimmed">✓ reconciled through {reconciledThrough}</Text>
@@ -156,7 +211,35 @@ export function TransactionsView() {
       <Group mb="xs">
         <TextInput leftSection={<IconSearch size={16} />} placeholder="Search payee, memo, category…" value={query} onChange={(e) => setQuery(e.currentTarget.value)} style={{ flex: 1 }} />
         {!single && <Select placeholder="All accounts" clearable value={account} onChange={setAccount} data={accountData} w={220} />}
+        <Button variant="default" leftSection={<IconTags size={16} />} onClick={() => setPayeesOpen(true)}>
+          Payees
+        </Button>
       </Group>
+
+      {selected.size > 0 && (
+        <Group gap="xs" mb="xs" px="sm" py={6} style={{ background: "var(--mantine-color-indigo-light)", borderRadius: 8 }}>
+          <Text size="sm" fw={600}>{selected.size} selected</Text>
+          {selectedUnapproved.length > 0 && (
+            <Button size="xs" variant="light" color="orange" leftSection={<IconChecks size={14} />} onClick={() => bulk(() => approveTransactions(selectedUnapproved))}>
+              Approve {selectedUnapproved.length}
+            </Button>
+          )}
+          <Button size="xs" variant="light" color="teal" onClick={() => bulk((ids) => setClearedStatus(ids, "cleared"))}>Mark cleared</Button>
+          <Button size="xs" variant="light" color="gray" onClick={() => bulk((ids) => setClearedStatus(ids, "uncleared"))}>Mark uncleared</Button>
+          <Button
+            size="xs"
+            variant="light"
+            color="red"
+            leftSection={<IconTrash size={14} />}
+            onClick={() => {
+              if (window.confirm(`Delete ${selected.size} transaction${selected.size === 1 ? "" : "s"}?`)) bulk(deleteTransactions);
+            }}
+          >
+            Delete
+          </Button>
+          <Button size="xs" variant="subtle" color="gray" onClick={() => setSelected(new Set())}>Clear selection</Button>
+        </Group>
+      )}
 
       {scheduled.length > 0 && (
         <Box mb="sm" style={{ border: "1px solid var(--mantine-color-orange-4)", borderRadius: 8, overflow: "hidden" }}>
@@ -175,25 +258,47 @@ export function TransactionsView() {
             </Tooltip>
           </Group>
           <Collapse in={schedOpen}>
-            {scheduled.map((t) => (
-              <Box
-                key={t.id}
-                style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px", borderTop: "1px solid var(--mantine-color-orange-2)", background: "light-dark(var(--mantine-color-orange-0), rgba(255,146,43,0.06))" }}
-              >
-                <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
-                <Badge size="xs" color="orange" variant="light">scheduled</Badge>
-                <Group gap={2} wrap="nowrap" justify="flex-end">
-                  <Tooltip label="Approve — count it in the budget" withArrow>
-                    <ActionIcon variant="light" color="teal" size="sm" onClick={() => approveTransaction(t.id)} aria-label="Approve">
-                      <IconCheck size={14} />
+            {scheduled.map((t) => {
+              const due = t.date <= todayIso();
+              if (editingId === t.id && !t.splits && !t.transfer) {
+                return (
+                  <EditorRow key={t.id} single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
+                );
+              }
+              return (
+                <Box
+                  key={t.id}
+                  onDoubleClick={() => !t.splits && !t.transfer && setEditingId(t.id)}
+                  style={{
+                    display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px",
+                    borderTop: "1px solid var(--mantine-color-orange-2)",
+                    background: due ? "light-dark(var(--mantine-color-orange-1), rgba(255,146,43,0.16))" : "light-dark(var(--mantine-color-orange-0), rgba(255,146,43,0.06))",
+                    cursor: !t.splits && !t.transfer ? "pointer" : "default",
+                  }}
+                >
+                  <Checkbox size="xs" checked={selected.has(t.id)} onChange={() => toggleSelect(t.id)} aria-label="Select row" />
+                  <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
+                  <Group gap={4} wrap="nowrap">
+                    <Badge size="xs" color="orange" variant={due ? "filled" : "light"}>{due ? "due" : "scheduled"}</Badge>
+                    {t.recurrence && (
+                      <Tooltip label={`Repeats ${FREQ_LABEL[t.recurrence.freq]} — approving schedules the next one`} withArrow>
+                        <Badge size="xs" color="grape" variant="light" leftSection={<IconRepeat size={10} />}>{FREQ_LABEL[t.recurrence.freq]}</Badge>
+                      </Tooltip>
+                    )}
+                  </Group>
+                  <Group gap={2} wrap="nowrap" justify="flex-end">
+                    <Tooltip label="Approve — count it in the budget" withArrow>
+                      <ActionIcon variant="light" color="teal" size="sm" onClick={() => approveTransaction(t.id)} aria-label="Approve">
+                        <IconCheck size={14} />
+                      </ActionIcon>
+                    </Tooltip>
+                    <ActionIcon variant="subtle" color="gray" size="sm" onClick={() => deleteTransaction(t.id)} aria-label="Delete">
+                      <IconTrash size={14} />
                     </ActionIcon>
-                  </Tooltip>
-                  <ActionIcon variant="subtle" color="gray" size="sm" onClick={() => deleteTransaction(t.id)} aria-label="Delete">
-                    <IconTrash size={14} />
-                  </ActionIcon>
-                </Group>
-              </Box>
-            ))}
+                  </Group>
+                </Box>
+              );
+            })}
           </Collapse>
         </Box>
       )}
@@ -203,7 +308,14 @@ export function TransactionsView() {
       </Text>
 
       {/* Column header */}
-      <Box style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, padding: "6px 10px", borderBottom: "1px solid var(--mantine-color-default-border)", fontWeight: 600, fontSize: 13 }}>
+      <Box style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, padding: "6px 10px", borderBottom: "1px solid var(--mantine-color-default-border)", fontWeight: 600, fontSize: 13, alignItems: "center" }}>
+        <Checkbox
+          size="xs"
+          aria-label="Select all visible rows"
+          checked={approved.length > 0 && approved.every((t) => selected.has(t.id))}
+          indeterminate={approved.some((t) => selected.has(t.id)) && !approved.every((t) => selected.has(t.id))}
+          onChange={(e) => setSelected(e.currentTarget.checked ? new Set(approved.map((t) => t.id)) : new Set())}
+        />
         <SortCell col="date" label="Date" sort={sort} onSort={cycleSort} />
         {!single && <SortCell col="account" label="Account" sort={sort} onSort={cycleSort} />}
         <SortCell col="payee" label="Payee" sort={sort} onSort={cycleSort} />
@@ -230,16 +342,22 @@ export function TransactionsView() {
                 ) : (
                   <Box
                     onDoubleClick={() => !t.splits && !t.transfer && setEditingId(t.id)}
-                    style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--mantine-color-default-border)", cursor: !t.splits && !t.transfer ? "pointer" : "default" }}
+                    style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--mantine-color-default-border)", cursor: !t.splits && !t.transfer ? "pointer" : "default", background: selected.has(t.id) ? "var(--mantine-color-indigo-light)" : undefined }}
                   >
+                    <Checkbox size="xs" checked={selected.has(t.id)} onChange={() => toggleSelect(t.id)} aria-label="Select row" />
                     <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
-                    <div>
+                    <Group gap={4} wrap="nowrap">
                       {!t.approved ? (
                         <Badge size="xs" color="orange" variant="light">scheduled</Badge>
                       ) : (
                         <Badge size="xs" color={t.cleared === "reconciled" ? "blue" : t.cleared === "cleared" ? "teal" : "gray"} variant="light">{t.cleared}</Badge>
                       )}
-                    </div>
+                      {t.recurrence && (
+                        <Tooltip label={`Repeats ${FREQ_LABEL[t.recurrence.freq]}`} withArrow>
+                          <Badge size="xs" color="grape" variant="light" px={4}><IconRepeat size={10} /></Badge>
+                        </Tooltip>
+                      )}
+                    </Group>
                     <Menu position="bottom-end" withinPortal>
                       <Menu.Target><ActionIcon variant="subtle" color="gray" aria-label="Row actions"><IconDots size={16} /></ActionIcon></Menu.Target>
                       <Menu.Dropdown>
@@ -269,6 +387,7 @@ export function TransactionsView() {
         onSave={(splits) => { if (splitting) setSplits(splitting.id, splits); setSplitting(null); }}
         onUnsplit={splitting?.splits ? () => { setSplits(splitting.id, undefined, splitting.splits?.[0]?.categoryId); setSplitting(null); } : undefined}
       />
+      <PayeesModal opened={payeesOpen} onClose={() => setPayeesOpen(false)} />
     </Box>
   );
 }

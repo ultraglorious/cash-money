@@ -42,6 +42,7 @@ import {
   type Ulid,
 } from "@cash-money/core";
 import { useApp } from "../../state";
+import { categoryOptions } from "../../categoryOptions";
 import { money } from "../../format";
 import { isTauri, readTextAbs, readZipCsvs } from "../../platform/tauriFs";
 import {
@@ -501,10 +502,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
     ...saved.map((s) => ({ value: s.format.id, label: s.format.name })),
   ];
   const canPreview = Boolean(parsed && accountId && mappingComplete(mapping));
-  const categoryData = app.budget.groups
-    .filter((g) => g.kind !== "income")
-    .map((g) => ({ group: g.name, items: app.budget.categories.filter((c) => c.groupId === g.id).map((c) => ({ value: c.id, label: c.name })) }))
-    .filter((grp) => grp.items.length > 0);
+  const categoryData = categoryOptions(app.budget);
   const unclaimedTxs = result
     ? result.unclaimedBudget.map((id) => app.budget.transactions.find((t) => t.id === id)).filter((t): t is Transaction => !!t)
     : [];

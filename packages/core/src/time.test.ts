@@ -4,6 +4,7 @@ import {
   compareMonth,
   monthKeyOf,
   monthRange,
+  nextOccurrence,
   parseImportMonth,
 } from "./time.js";
 
@@ -34,6 +35,23 @@ describe("month math", () => {
       "2026-11", "2026-12", "2027-01", "2027-02",
     ]);
     expect(monthRange("2026-02", "2026-01")).toEqual([]);
+  });
+});
+
+describe("nextOccurrence", () => {
+  it("steps weekly and biweekly across month boundaries", () => {
+    expect(nextOccurrence("2026-01-28", "weekly")).toBe("2026-02-04");
+    expect(nextOccurrence("2026-12-25", "biweekly")).toBe("2027-01-08");
+  });
+  it("steps monthly, clamping to short months but honouring the anchor day", () => {
+    expect(nextOccurrence("2026-01-15", "monthly")).toBe("2026-02-15");
+    expect(nextOccurrence("2026-01-31", "monthly")).toBe("2026-02-28");
+    expect(nextOccurrence("2026-02-28", "monthly", 31)).toBe("2026-03-31");
+    expect(nextOccurrence("2026-12-31", "monthly")).toBe("2027-01-31");
+  });
+  it("steps yearly (leap day clamps to Feb 28)", () => {
+    expect(nextOccurrence("2026-06-01", "yearly")).toBe("2027-06-01");
+    expect(nextOccurrence("2028-02-29", "yearly")).toBe("2029-02-28");
   });
 });
 

@@ -5,6 +5,7 @@ import {
   computeProjection,
   monthKeyOf,
   newId,
+  nextOccurrence,
   ops,
   type AccountType,
   type Cents,
@@ -130,8 +131,13 @@ interface Actions {
   setTransactions: (txs: Transaction[]) => void;
   updateTransaction: (id: Ulid, patch: Partial<Omit<Transaction, "id">>) => void;
   deleteTransaction: (id: Ulid) => void;
+  deleteTransactions: (ids: Ulid[]) => void;
   approveTransaction: (id: Ulid) => void;
   approveTransactions: (ids: Ulid[]) => void;
+  /** Bulk cleared-status change (multi-select "mark cleared/uncleared"). */
+  setClearedStatus: (ids: Ulid[], cleared: "cleared" | "uncleared" | "reconciled") => void;
+  /** Rename every transaction with this exact payee. */
+  renamePayee: (from: string, to: string) => void;
   setSplits: (id: Ulid, splits: SplitLine[] | undefined, categoryIdWhenUnsplit?: Ulid) => void;
   /** Mark statement-confirmed rows reconciled and advance the account's reconciled-through date. */
   reconcileAccount: (accountId: Ulid, txIds: Ulid[], through: string) => void;
@@ -286,6 +292,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const t = budgetRef.current?.transactions.find((x) => x.id === id);
       return t ? monthKeyOf(t.date) : undefined;
     };
+    /** Month the next occurrence of a repeating txn will land in, if any. */
+    const successorMonth = (id: Ulid): MonthKey | undefined => {
+      const t = budgetRef.current?.transactions.find((x) => x.id === id);
+      return t?.recurrence && !t.approved
+        ? monthKeyOf(nextOccurrence(t.date, t.recurrence.freq, t.recurrence.anchorDay))
+        : undefined;
+    };
     const markAll = () => mark({ meta: true, accounts: true, categories: true, assignments: true, txAll: true });
 
     return {
@@ -323,8 +336,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         apply((b) => ops.updateTransaction(b, id, patch));
       },
       deleteTransaction: (id) => { mark({ txMonths: [txMonth(id)] }); apply((b) => ops.deleteTransaction(b, id)); },
-      approveTransaction: (id) => { mark({ txMonths: [txMonth(id)] }); apply((b) => ops.approveTransaction(b, id)); },
-      approveTransactions: (ids) => { mark({ txMonths: ids.map(txMonth) }); apply((b) => ops.approveTransactions(b, ids)); },
+      deleteTransactions: (ids) => { mark({ txMonths: ids.map(txMonth) }); apply((b) => ops.deleteTransactions(b, ids)); },
+      // Approving a repeating txn spawns its next occurrence in a LATER month —
+      // that shard must be marked dirty too or the successor never hits disk.
+      approveTransaction: (id) => { mark({ txMonths: [txMonth(id), successorMonth(id)] }); apply((b) => ops.approveTransaction(b, id)); },
+      approveTransactions: (ids) => { mark({ txMonths: [...ids.map(txMonth), ...ids.map(successorMonth)] }); apply((b) => ops.approveTransactions(b, ids)); },
+      setClearedStatus: (ids, cleared) => { mark({ txMonths: ids.map(txMonth) }); apply((b) => ops.setClearedStatus(b, ids, cleared)); },
+      renamePayee: (from, to) => { mark({ txAll: true }); apply((b) => ops.renamePayee(b, from, to)); },
       setSplits: (id, splits, categoryIdWhenUnsplit) => { mark({ txMonths: [txMonth(id)] }); apply((b) => ops.setSplits(b, id, splits, categoryIdWhenUnsplit)); },
       reconcileAccount: (accountId, txIds, through) => {
         mark({ accounts: true, txMonths: txIds.map(txMonth) });

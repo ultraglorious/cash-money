@@ -1,7 +1,7 @@
 import type { Cents } from "../money.js";
 import type { CurrencyConfig } from "../money.js";
 import type { Fingerprint, Ulid } from "../ids.js";
-import type { ISODate, MonthKey } from "../time.js";
+import type { ISODate, MonthKey, RecurrenceFreq } from "../time.js";
 
 /** Bumped when the on-disk shape changes in a way that needs migration. */
 export const SCHEMA_VERSION = 1;
@@ -123,6 +123,13 @@ export interface Transaction {
    * activity, balances, and Ready-to-Assign until the user approves them.
    */
   approved: boolean;
+  /**
+   * Present => this scheduled transaction repeats: approving it (entering it
+   * into the register) spawns the next occurrence as a new scheduled entry.
+   * `anchorDay` pins monthly/yearly bills to their true day of month so a
+   * short month doesn't make later occurrences drift (Jan 31 → Feb 28 → Mar 31).
+   */
+  recurrence?: { freq: RecurrenceFreq; anchorDay?: number };
   flag?: FlagColor;
   /** Set for a simple categorized txn. Undefined for splits, transfers, and income. */
   categoryId?: Ulid;

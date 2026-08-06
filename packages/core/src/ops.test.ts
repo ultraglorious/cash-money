@@ -211,6 +211,45 @@ describe("transaction ops", () => {
     expect(computeProjection(b).activityOf(GRO, M)).toBe(0);
   });
 
+  it("approving a repeating scheduled txn enters the next occurrence", () => {
+    const withRepeat = ops.addTransaction(
+      base(),
+      f.txn({
+        id: f.tid("TR"), accountId: CHK, date: "2026-01-31", amount: -4000 as Cents, categoryId: DIN,
+        approved: false, recurrence: { freq: "monthly", anchorDay: 31 },
+      }),
+    );
+    const b = ops.approveTransaction(withRepeat, f.tid("TR"));
+    expect(b.transactions.find((t) => t.id === f.tid("TR"))!.approved).toBe(true);
+    const next = b.transactions.find((t) => !t.approved && t.recurrence);
+    expect(next).toMatchObject({ date: "2026-02-28", amount: -4000, cleared: "uncleared" });
+    expect(next!.id).not.toBe(f.tid("TR"));
+    expect(next!.source).toBeUndefined();
+    // The anchor day survives the short month: approving Feb's lands on Mar 31.
+    const b2 = ops.approveTransaction(b, next!.id);
+    expect(b2.transactions.find((t) => !t.approved && t.recurrence)!.date).toBe("2026-03-31");
+    // Re-approving an already-approved row spawns nothing.
+    expect(ops.approveTransaction(b2, f.tid("TR")).transactions).toHaveLength(b2.transactions.length);
+  });
+
+  it("renamePayee renames exact matches everywhere and ignores empty targets", () => {
+    const two = ops.addTransaction(base(), f.txn({ id: f.tid("TX2"), accountId: CHK, date: "2026-01-21", amount: -100 as Cents, payee: "Shop A" }));
+    const renamed = ops.renamePayee(
+      ops.updateTransaction(two, f.tid("TGRO"), { payee: "Shop A" }),
+      "Shop A",
+      "Shop B",
+    );
+    expect(renamed.transactions.filter((t) => t.payee === "Shop B")).toHaveLength(2);
+    expect(ops.renamePayee(renamed, "Shop B", "  ")).toBe(renamed);
+  });
+
+  it("setClearedStatus and deleteTransactions act on many rows at once", () => {
+    const b = ops.setClearedStatus(base(), [f.tid("TGRO"), f.tid("TINC")], "reconciled");
+    expect(b.transactions.filter((t) => t.cleared === "reconciled").length).toBeGreaterThanOrEqual(2);
+    const d = ops.deleteTransactions(base(), [f.tid("TGRO")]);
+    expect(d.transactions.find((t) => t.id === f.tid("TGRO"))).toBeUndefined();
+  });
+
   it("reconcileAccount marks rows reconciled and never moves the through-date backwards", () => {
     const b1 = ops.reconcileAccount(base(), CHK, [f.tid("TGRO")], "2026-01-31");
     expect(b1.transactions.find((t) => t.id === f.tid("TGRO"))!.cleared).toBe("reconciled");

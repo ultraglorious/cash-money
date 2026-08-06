@@ -108,6 +108,12 @@ export const TransactionSchema = z.object({
   amount: cents,
   cleared: z.enum(["cleared", "uncleared", "reconciled"]),
   approved: z.boolean(),
+  recurrence: z
+    .object({
+      freq: z.enum(["weekly", "biweekly", "monthly", "yearly"]),
+      anchorDay: z.number().int().min(1).max(31).optional(),
+    })
+    .optional(),
   flag: z.enum(["blue", "green", "purple", "red", "yellow"]).optional(),
   categoryId: ulid.optional(),
   splits: z.array(SplitLineSchema).optional(),
