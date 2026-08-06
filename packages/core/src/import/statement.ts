@@ -270,10 +270,18 @@ export function reconcileStatement(
   };
 }
 
-/** Turn confirmed statement rows into transactions on the target account. */
+/**
+ * Turn confirmed statement rows into transactions on the target account.
+ * `cleared` is the caller's call because it depends on what the statement
+ * PROVES: a debit on a cash account's statement was paid ("reconciled"),
+ * while a swipe on a card's statement merely exists — it isn't settled until
+ * its invoice is paid, so card rows should enter "uncleared" (invoice
+ * deduction promotes them later; see invoices.ts).
+ */
 export function buildStatementTransactions(
   rows: readonly StatementRow[],
   opts: StatementOptions,
+  cleared: "reconciled" | "uncleared" = "reconciled",
 ): Transaction[] {
   const asOf = rows.reduce((max, r) => (r.date > max ? r.date : max), "0000-00-00");
   return rows.map((r) => ({
@@ -284,7 +292,7 @@ export function buildStatementTransactions(
     payee: r.payee,
     memo: r.memo,
     amount: r.amount,
-    cleared: "reconciled" as const, // straight from the bank's own record
+    cleared,
     approved: true, // statements are historical actuals
     source: {
       sourceBudget: opts.sourceKey,

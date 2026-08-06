@@ -417,7 +417,7 @@ function StatusBadge({ t, onApprove, onSetCleared }: {
   const tip = {
     cleared: "Paid — settled at the bank. Click to mark uncleared.",
     uncleared: "Real but not yet settled (e.g. awaiting the card bill). Click to mark cleared.",
-    reconciled: "Confirmed by a bank statement. Click to unlock as uncleared.",
+    reconciled: "Settled and confirmed — covered by a matched invoice payment or bank statement. Click to unlock as uncleared.",
   }[t.cleared];
   const click = (e: MouseEvent) => {
     e.stopPropagation();

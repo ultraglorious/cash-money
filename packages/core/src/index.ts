@@ -13,6 +13,7 @@ export * from "./persistence/repository.js";
 export { InMemoryFileSystem } from "./persistence/memoryFs.js";
 export * from "./engine/index.js";
 export * as ops from "./ops.js";
+export { deduceInvoiceCoverage, type InvoiceCoverage } from "./invoices.js";
 export * from "./import/format.js";
 export { builtinFormat, builtinFormats } from "./import/formats/index.js";
 export { guessFormat, type FormatGuess } from "./import/guess.js";

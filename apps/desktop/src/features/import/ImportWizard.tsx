@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Accordion,
   ActionIcon,
@@ -25,6 +25,7 @@ import { IconAlertTriangle, IconFileImport, IconTrash } from "@tabler/icons-reac
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   buildStatementTransactions,
+  deduceInvoiceCoverage,
   formatFitsHeaders,
   guessFormat,
   mergeImport,
@@ -34,6 +35,7 @@ import {
   stageImport,
   type CurrencyConfig,
   type ImportConfig,
+  type InvoiceCoverage,
   type RegisterFormat,
   type SavedFormat,
   type StagingResult,
@@ -354,7 +356,40 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   const [result, setResult] = useState<StatementReconcile | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set()); // sourceRow keys
   const [edits, setEdits] = useState<Map<number, RowEdit>>(new Map());
+  const [coverageOn, setCoverageOn] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const isCard = app.budget.accounts.find((a) => a.id === accountId)?.type === "creditCard";
+
+  /** Ticked statement rows as they would land in the budget (for coverage preview). */
+  const stagedRows = (r: StatementReconcile, ticked: Set<number>): Transaction[] =>
+    r.toAdd
+      .filter((row) => ticked.has(row.sourceRow))
+      .map((row) => ({
+        id: `stmt-row-${row.sourceRow}` as Ulid,
+        accountId: accountId as Ulid,
+        date: row.date,
+        effectiveDate: row.date,
+        payee: row.payee,
+        memo: row.memo,
+        amount: row.amount,
+        cleared: "uncleared" as const,
+        approved: true,
+      }));
+
+  // Invoice deduction preview: which card payment settles which billing
+  // window, given the rows about to be added. A statement match alone never
+  // marks a card row paid — this is what does.
+  const coverage = useMemo<InvoiceCoverage | null>(() => {
+    if (!result || !isCard || !accountId) return null;
+    return deduceInvoiceCoverage([...app.budget.transactions, ...stagedRows(result, selected)], accountId as Ulid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result, selected, accountId, isCard, app.budget]);
+  const settledCount = useMemo(() => {
+    if (!coverage) return 0;
+    const clearedOf = new Map(app.budget.transactions.map((t) => [t.id, t.cleared]));
+    return coverage.covered.filter((id) => clearedOf.get(id) !== "reconciled").length;
+  }, [coverage, app.budget]);
 
   useEffect(() => {
     app.loadFormats().then(setSaved).catch(() => setSaved([]));
@@ -480,18 +515,31 @@ function StatementPane({ onDone }: { onDone: () => void }) {
     const sourceKey = await app.statementSourceKey(accId, durable.id);
 
     const rows = result.toAdd.filter((r) => selected.has(r.sourceRow));
+    let added: Transaction[] = [];
     if (rows.length > 0) {
-      const built = buildStatementTransactions(rows, { sourceKey, accountId: accId, currency: app.currency });
-      app.addTransactions(
-        built.map((tx, i) => {
-          const e = edits.get(rows[i]!.sourceRow);
-          const payee = e?.payee?.trim();
-          return { ...tx, ...(payee ? { payee } : {}), ...(e?.categoryId ? { categoryId: e.categoryId as Ulid } : {}) };
-        }),
-      );
+      // A card swipe on the statement exists but isn't PAID — it enters
+      // uncleared and gets settled by invoice deduction below. A cash-account
+      // debit on the statement was paid, so it enters reconciled.
+      const built = buildStatementTransactions(rows, { sourceKey, accountId: accId, currency: app.currency }, isCard ? "uncleared" : "reconciled");
+      added = built.map((tx, i) => {
+        const e = edits.get(rows[i]!.sourceRow);
+        const payee = e?.payee?.trim();
+        return { ...tx, ...(payee ? { payee } : {}), ...(e?.categoryId ? { categoryId: e.categoryId as Ulid } : {}) };
+      });
+      app.addTransactions(added);
     }
     if (result.parsedRows > 0) {
-      app.reconcileAccount(accId, result.matches.map((m) => m.txId), result.check.to);
+      // Matched card rows are verified, not paid — only the through-date
+      // advances; cash-account matches were settled, so they reconcile.
+      app.reconcileAccount(accId, isCard ? [] : result.matches.map((m) => m.txId), result.check.to);
+    }
+    if (isCard && coverageOn) {
+      const cov = deduceInvoiceCoverage([...app.budget.transactions, ...added], accId);
+      if (cov) {
+        const clearedOf = new Map(app.budget.transactions.map((t) => [t.id, t.cleared]));
+        const newly = cov.covered.filter((id) => clearedOf.get(id) !== "reconciled");
+        if (newly.length > 0) app.setClearedStatus(newly, "reconciled");
+      }
     }
     app.setView({ kind: "account", accountId: accId });
     onDone();
@@ -570,6 +618,11 @@ function StatementPane({ onDone }: { onDone: () => void }) {
           setSelected={setSelected}
           edits={edits}
           setEdits={setEdits}
+          isCard={isCard}
+          coverage={coverage}
+          settledCount={settledCount}
+          coverageOn={coverageOn}
+          setCoverageOn={setCoverageOn}
           onCommit={() => void commit()}
         />
       )}
@@ -577,7 +630,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ReconcileView({ result, currency, accountName, categoryData, unclaimed, selected, setSelected, edits, setEdits, onCommit }: {
+function ReconcileView({ result, currency, accountName, categoryData, unclaimed, selected, setSelected, edits, setEdits, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
   result: StatementReconcile;
   currency: CurrencyConfig;
   accountName: string;
@@ -587,6 +640,11 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
   setSelected: (s: Set<number>) => void;
   edits: Map<number, RowEdit>;
   setEdits: (e: Map<number, RowEdit>) => void;
+  isCard: boolean;
+  coverage: InvoiceCoverage | null;
+  settledCount: number;
+  coverageOn: boolean;
+  setCoverageOn: (v: boolean) => void;
   onCommit: () => void;
 }) {
   const matchedRows = result.matches.reduce((a, m) => a + m.rows.length, 0);
@@ -637,6 +695,25 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
           Only {explained} of {result.parsedRows} statement rows matched anything in “{accountName}”. If this period
           should already be in the budget, double-check the account before adding {result.toAdd.length} rows.
         </Alert>
+      )}
+
+      {isCard && (
+        coverage && settledCount > 0 ? (
+          <Checkbox
+            mt="xs"
+            checked={coverageOn}
+            onChange={(e) => setCoverageOn(e.currentTarget.checked)}
+            label={`Invoice payment matched: ${money(coverage.paymentAmount, currency)} on ${coverage.paymentDate} settles the period ${coverage.windowFrom} – ${coverage.windowTo} (and everything before it) — mark ${settledCount} transaction${settledCount === 1 ? "" : "s"} reconciled`}
+          />
+        ) : coverage ? (
+          <Text size="xs" c="dimmed" mt="xs">
+            Invoice payment matched ({money(coverage.paymentAmount, currency)} on {coverage.paymentDate}) — everything it settles is already reconciled.
+          </Text>
+        ) : (
+          <Text size="xs" c="dimmed" mt="xs">
+            No card payment matches a billing window yet, so paid status is left unchanged — a swipe on the statement isn't paid until its invoice is.
+          </Text>
+        )
       )}
 
       {result.toAdd.length > 0 && (
@@ -748,7 +825,9 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
       <Divider my="md" />
       <Group justify="space-between">
         <Text size="xs" c="dimmed">
-          Matched rows are marked reconciled ✓ and the mapping is remembered for next time.
+          {isCard
+            ? "Matches verify the bank's record; paid status comes from matched invoice payments. The mapping is remembered for next time."
+            : "Matched rows are marked reconciled ✓ and the mapping is remembered for next time."}
         </Text>
         <Button color="teal" onClick={onCommit}>
           {selected.size > 0
