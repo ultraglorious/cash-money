@@ -127,6 +127,7 @@ describe("reconcileStatement passes", () => {
     const first = reconcileStatement(budget([]), csv, FORMAT, OPTS);
     expect(first.toAdd).toHaveLength(1);
     const committed = buildStatementTransactions(first.toAdd, OPTS);
+    expect(committed[0]!.cleared).toBe("reconciled"); // straight from the bank's record
     const second = reconcileStatement(budget(committed), csv, FORMAT, OPTS);
     expect(second.matches[0]!.kind).toBe("identity");
     expect(second.toAdd).toHaveLength(0);

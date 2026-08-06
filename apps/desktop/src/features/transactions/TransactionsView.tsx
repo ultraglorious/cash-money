@@ -104,6 +104,7 @@ export function TransactionsView() {
 
   const title = single ? accountName(single) : "All Accounts";
   const balance = single ? projection.accountBalances().get(single) ?? 0 : null;
+  const reconciledThrough = single ? budget.accounts.find((a) => a.id === single)?.reconciledThrough : undefined;
 
   const addFromEditor = (data: EditorSubmit) => {
     addTransaction({
@@ -141,6 +142,11 @@ export function TransactionsView() {
         <Group gap="sm" align="baseline">
           <Title order={3}>{title}</Title>
           {balance !== null && <Text size="lg" fw={600} c={amountColor(balance)}>{money(balance, currency)}</Text>}
+          {reconciledThrough && (
+            <Tooltip label="A bank statement confirmed this account's transactions up to this date." withArrow>
+              <Text size="xs" c="dimmed">✓ reconciled through {reconciledThrough}</Text>
+            </Tooltip>
+          )}
         </Group>
         <Button leftSection={<IconPlus size={16} />} onClick={() => { setEditingId(null); setAdding(true); }} disabled={adding}>
           Add transaction
@@ -231,7 +237,7 @@ export function TransactionsView() {
                       {!t.approved ? (
                         <Badge size="xs" color="orange" variant="light">scheduled</Badge>
                       ) : (
-                        <Badge size="xs" color={t.cleared === "cleared" ? "teal" : "gray"} variant="light">{t.cleared}</Badge>
+                        <Badge size="xs" color={t.cleared === "reconciled" ? "blue" : t.cleared === "cleared" ? "teal" : "gray"} variant="light">{t.cleared}</Badge>
                       )}
                     </div>
                     <Menu position="bottom-end" withinPortal>

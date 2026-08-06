@@ -66,6 +66,15 @@ export function requireColumns(headers: readonly string[], required: readonly st
   return required.filter((c) => !have.has(c));
 }
 
+/**
+ * Whether a CSV with these headers could be read with this format — every
+ * column the format references exists (the account column excepted: statement
+ * imports pin the account explicitly). Used to recognize a known bank's file.
+ */
+export function formatFitsHeaders(format: RegisterFormat, headers: readonly string[]): boolean {
+  return requireColumns(headers, referencedColumns(format, { fixedAccount: "-" })).length === 0;
+}
+
 // ---- Format-driven row mapping ----------------------------------------------
 
 export type RowKind = "withinTransfer" | "income" | "normal";
@@ -118,7 +127,7 @@ export interface MapRegisterResult {
   errors: string[];
 }
 
-function referencedColumns(format: RegisterFormat, opts: MapRegisterOptions): string[] {
+function referencedColumns(format: RegisterFormat, opts: Pick<MapRegisterOptions, "fixedAccount">): string[] {
   const cols = [format.date.column, format.payeeColumn];
   if (format.amount.mode === "signed") cols.push(format.amount.column);
   else cols.push(format.amount.inflowColumn, format.amount.outflowColumn);

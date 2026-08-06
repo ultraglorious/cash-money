@@ -1,6 +1,6 @@
 import { newId, type Ulid } from "./ids.js";
 import type { Cents } from "./money.js";
-import type { MonthKey } from "./time.js";
+import type { ISODate, MonthKey } from "./time.js";
 import { computeProjection } from "./engine/compute.js";
 import type {
   Account,
@@ -294,6 +294,31 @@ export function approveTransactions(b: LoadedBudget, txIds: readonly Ulid[]): Lo
   return {
     ...b,
     transactions: b.transactions.map((t) => (ids.has(t.id) && !t.approved ? { ...t, approved: true } : t)),
+  };
+}
+
+/**
+ * Record a statement reconciliation: the bank confirmed these rows, so they
+ * become `reconciled`, and the account remembers the latest confirmed date
+ * (never moving it backwards — an older statement re-run must not regress it).
+ */
+export function reconcileAccount(
+  b: LoadedBudget,
+  accountId: Ulid,
+  txIds: readonly Ulid[],
+  through: ISODate,
+): LoadedBudget {
+  const ids = new Set(txIds);
+  return {
+    ...b,
+    accounts: b.accounts.map((a) =>
+      a.id === accountId && (!a.reconciledThrough || a.reconciledThrough < through)
+        ? { ...a, reconciledThrough: through }
+        : a,
+    ),
+    transactions: b.transactions.map((t) =>
+      ids.has(t.id) && t.cleared !== "reconciled" ? { ...t, cleared: "reconciled" } : t,
+    ),
   };
 }
 

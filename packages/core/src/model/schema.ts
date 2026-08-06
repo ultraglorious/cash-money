@@ -49,6 +49,7 @@ export const AccountSchema = z.object({
   closed: z.boolean(),
   sortOrder: z.number(),
   household: z.string().optional(),
+  reconciledThrough: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
 export const CategoryGroupSchema = z.object({

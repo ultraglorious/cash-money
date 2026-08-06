@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EUR } from "../money.js";
 import type { RegisterFormat } from "./format.js";
 import { builtinFormat } from "./formats/index.js";
-import { mapRegisterRows, parseCsv, parseDateAs, type MapRegisterOptions } from "./register.js";
+import { formatFitsHeaders, mapRegisterRows, parseCsv, parseDateAs, type MapRegisterOptions } from "./register.js";
 
 const LIB = builtinFormat("lib:budget-export-register")!;
 const OPTS: MapRegisterOptions = { sourceKey: "s1", currency: EUR, exportDate: "2026-08-03" };
@@ -198,6 +198,12 @@ describe("mapRegisterRows with statement-style formats", () => {
     const { rows } = mapRegisterRows(parseCsv(text), f, { sourceKey: "b1", currency: EUR, fixedAccount: "Main" });
     expect(rows[0]).toMatchObject({ kind: "withinTransfer", counterAccount: "Savings" });
     expect(rows[1]!.kind).toBe("normal");
+  });
+
+  it("formatFitsHeaders recognizes a file the format can read (account column not required)", () => {
+    expect(formatFitsHeaders(STATEMENT, ["Booked", "Description", "Amount", "Extra"])).toBe(true);
+    expect(formatFitsHeaders(STATEMENT, ["Date", "Description", "Amount"])).toBe(false);
+    expect(formatFitsHeaders(LIB, ["Date", "Payee"])).toBe(false); // library format needs its full column set
   });
 
   it("honours a custom split-memo marker", () => {

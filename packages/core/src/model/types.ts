@@ -43,6 +43,8 @@ export interface Account {
    * breakdown. A user-supplied string, never hardcoded in source.
    */
   household?: string;
+  /** Last date through which a bank statement confirmed this account's rows. */
+  reconciledThrough?: ISODate;
 }
 
 export interface CategoryGroup {

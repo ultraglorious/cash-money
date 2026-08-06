@@ -211,6 +211,18 @@ describe("transaction ops", () => {
     expect(computeProjection(b).activityOf(GRO, M)).toBe(0);
   });
 
+  it("reconcileAccount marks rows reconciled and never moves the through-date backwards", () => {
+    const b1 = ops.reconcileAccount(base(), CHK, [f.tid("TGRO")], "2026-01-31");
+    expect(b1.transactions.find((t) => t.id === f.tid("TGRO"))!.cleared).toBe("reconciled");
+    expect(b1.accounts.find((a) => a.id === CHK)!.reconciledThrough).toBe("2026-01-31");
+
+    const b2 = ops.reconcileAccount(b1, CHK, [], "2026-01-15"); // older statement re-run
+    expect(b2.accounts.find((a) => a.id === CHK)!.reconciledThrough).toBe("2026-01-31");
+
+    const b3 = ops.reconcileAccount(b2, CHK, [], "2026-02-28");
+    expect(b3.accounts.find((a) => a.id === CHK)!.reconciledThrough).toBe("2026-02-28");
+  });
+
   it("approveTransaction makes a scheduled txn count", () => {
     const withScheduled = ops.addTransaction(
       base(),

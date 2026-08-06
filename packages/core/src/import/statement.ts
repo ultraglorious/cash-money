@@ -284,7 +284,7 @@ export function buildStatementTransactions(
     payee: r.payee,
     memo: r.memo,
     amount: r.amount,
-    cleared: "cleared" as const,
+    cleared: "reconciled" as const, // straight from the bank's own record
     approved: true, // statements are historical actuals
     source: {
       sourceBudget: opts.sourceKey,
