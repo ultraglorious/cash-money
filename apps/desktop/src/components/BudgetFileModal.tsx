@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Alert, Button, Code, Group, Modal, Stack, Text } from "@mantine/core";
-import { IconAlertTriangle, IconFolderOpen, IconFolderShare } from "@tabler/icons-react";
+import { notifications } from "@mantine/notifications";
+import { IconAlertTriangle, IconCheck, IconFolderOpen, IconFolderShare } from "@tabler/icons-react";
 import { useActions, useBudgetState } from "../state";
 import { isTauri } from "../platform/tauriFs";
 
@@ -28,6 +29,13 @@ export function BudgetFileModal({ opened, onClose }: { opened: boolean; onClose:
     setBusy(true);
     try {
       await moveBudgetFile(path);
+      notifications.show({
+        title: "Budget file moved",
+        message: `Now saving to ${path}`,
+        color: "teal",
+        icon: <IconCheck size={16} />,
+      });
+      onClose();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -43,6 +51,12 @@ export function BudgetFileModal({ opened, onClose }: { opened: boolean; onClose:
     setBusy(true);
     try {
       await openBudgetFile(picked);
+      notifications.show({
+        title: "Budget opened",
+        message: `Now following ${picked}`,
+        color: "teal",
+        icon: <IconCheck size={16} />,
+      });
       onClose();
     } catch (e) {
       setError(String(e));
@@ -73,7 +87,7 @@ export function BudgetFileModal({ opened, onClose }: { opened: boolean; onClose:
             Move to…
           </Button>
           <Button size="xs" variant="default" leftSection={<IconFolderOpen size={15} />} onClick={() => void openOther()} disabled={!isTauri() || busy}>
-            Open another file…
+            Switch to another budget file…
           </Button>
         </Group>
       </Stack>

@@ -139,6 +139,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [month, setMonth] = useState<MonthKey>("");
   const [view, setView] = useState<View>({ kind: "plan" });
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Brand-new machine: nothing local yet. Ask "create or open?" instead of
+  // silently minting an empty budget — the second computer of a synced pair
+  // should OPEN the synced file, not start from scratch.
+  const [needsSetup, setNeedsSetup] = useState(false);
 
   // Mirror of the current budget for the stable action closures below.
   const budgetRef = useRef<LoadedBudget | null>(null);
@@ -213,7 +217,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setFileConflict(false);
     setFilePath(path);
     setLoadError(null);
+    setNeedsSetup(false);
     dispatch({ type: "set", budget: data.loaded });
+  };
+
+  /** Write `loaded` to a fresh default-location file and follow it. */
+  const followNewFileRef = useRef<(loaded: LoadedBudget) => Promise<void>>(async () => {});
+  followNewFileRef.current = async (loaded) => {
+    const repo = repoRef.current;
+    if (!repo) return;
+    const { appDataDir, join } = await import("@tauri-apps/api/path");
+    const path = await join(await appDataDir(), budgetFileName(loaded.budget.name));
+    const text = serializeBudgetFile(
+      { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current },
+      new Date().toISOString(),
+    );
+    const mtime = await writeBudgetFile(path, text);
+    const app = await repo.loadApp();
+    await repo.saveApp({ ...app, budgetFilePath: path });
+    filePathRef.current = path;
+    fileMtimeRef.current = mtime;
+    backedUpRef.current = true; // just written; nothing older to preserve
+    setFilePath(path);
+    setNeedsSetup(false);
+    dispatch({ type: "set", budget: loaded });
   };
 
   const resolveConflictRef = useRef<(choice: "reload" | "overwrite") => Promise<void>>(async () => {});
@@ -255,29 +282,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (!cancelled) adoptRef.current(app.budgetFilePath, contents, mtimeMs);
           return;
         }
-        // First run on the single-file format: migrate legacy data if present.
-        let loaded: LoadedBudget;
+        // First run on the single-file format: migrate legacy data if present;
+        // on a truly fresh machine, ask create-or-open instead of assuming.
         if (app.activeBudgetId) {
-          loaded = await repo.loadBudget(app.activeBudgetId);
+          const loaded = await repo.loadBudget(app.activeBudgetId);
           formatsRef.current = await repo.loadFormats().catch(() => []);
           sourcesRef.current = await repo.loadImportSources(app.activeBudgetId).catch(() => []);
-        } else {
-          loaded = newEmptyBudget();
+          if (!cancelled) await followNewFileRef.current(loaded);
+        } else if (!cancelled) {
+          setNeedsSetup(true);
         }
-        const { appDataDir, join } = await import("@tauri-apps/api/path");
-        const path = await join(await appDataDir(), budgetFileName(loaded.budget.name));
-        const text = serializeBudgetFile(
-          { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current },
-          new Date().toISOString(),
-        );
-        const mtime = await writeBudgetFile(path, text);
-        await repo.saveApp({ ...app, budgetFilePath: path });
-        if (cancelled) return;
-        filePathRef.current = path;
-        fileMtimeRef.current = mtime;
-        backedUpRef.current = true; // just written; nothing older to preserve
-        setFilePath(path);
-        dispatch({ type: "set", budget: loaded });
       } catch (e) {
         // Never fall back to a fresh empty budget here: the real data — still
         // on disk or in the file — would be orphaned. Surface the problem.
@@ -484,6 +498,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
             </Button>
           </Group>
         </Alert>
+      </Center>
+    );
+  }
+
+  if (needsSetup) {
+    return (
+      <Center h="100vh" p="xl">
+        <Stack align="center" gap="md" maw={440}>
+          <Text size="xl" fw={700}>Welcome</Text>
+          <Text size="sm" c="dimmed" ta="center">
+            Start a new budget, or — if you already use the app on another computer — open your
+            synced <Text span ff="monospace" inherit>.cashmoney</Text> file (e.g. from iCloud Drive).
+          </Text>
+          <Group>
+            <Button
+              onClick={() => void followNewFileRef.current(newEmptyBudget()).catch((e) => setLoadError(String(e)))}
+            >
+              Create a new budget
+            </Button>
+            <Button
+              variant="default"
+              onClick={() => {
+                void (async () => {
+                  const { open } = await import("@tauri-apps/plugin-dialog");
+                  const picked = await open({ multiple: false, filters: [{ name: "Budget", extensions: ["cashmoney"] }] });
+                  if (!picked || Array.isArray(picked)) return;
+                  try {
+                    await actions.openBudgetFile(picked);
+                  } catch (e) {
+                    setLoadError(String(e));
+                  }
+                })();
+              }}
+            >
+              Open an existing budget file…
+            </Button>
+          </Group>
+        </Stack>
       </Center>
     );
   }
