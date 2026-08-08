@@ -33,7 +33,14 @@ accounting and its own Ready-to-Assign.
   known shapes ship as JSON files in a contributable format library, and your
   own mappings can be saved for reuse. Re-import is safe (idempotent — importing
   the same file twice changes nothing).
-- **Analytics** — a placeholder for now.
+- **Analytics** — an overview of income, spending and net over time; a waterfall
+  you can drill through account → section → category; a breakdown table with a
+  column per month; and net worth by account type. Money moved between your own
+  budgets is netted out, so shuffling a contribution a few days early never
+  reads as a loss.
+- **Sync** — the whole budget is one `.cashmoney` file you can keep in iCloud or
+  any synced folder. Two machines open at once resolve by three-way merge rather
+  than by asking you to pick a winner.
 
 The budgeting logic is done and thoroughly tested, and the desktop app loads and
 saves your real data on disk. See [Status](#status) for what's not built yet.
@@ -167,11 +174,16 @@ place, the app **loads/saves your real budget on disk**, and the **import wizard
 (pick export → dry-run report → commit) works. In a plain browser the app still
 runs on demo data with no persistence.
 
+Also done since: **analytics** (four views, with cross-budget transfers netted
+out), **single-file sync** with three-way merge between machines, **edit-preserving
+re-import**, **explicit transfers** between accounts, **card invoice deduction**
+(a statement match is not the same as a bill being paid), and a **safety net for
+bulk edits** — dated snapshots, undo, and a runtime check that refuses an edit
+claiming to change no figures if it would.
+
 Not done yet:
 
-- **Analytics** — currently a placeholder.
-- **Re-import merge** — committing an import currently replaces the budget; a
-  future version will merge a re-import into an existing budget while preserving
-  in-app edits (the identity/reconcile machinery for this already exists).
-- **Sync** — the file layout is designed to drop into a synced folder later.
+- **Targets** — categories carry no "€300 a month" goal; assignment is manual
+  every month, with quick-fill suggestions from your own history.
+- **Recurring transfers** — scheduled rows repeat, but not transfer pairs.
 - **Custom app icons** — still the default Tauri icons.

@@ -286,9 +286,13 @@ the UI renders without any real data or persistence.
 
 ## Where things will go next
 
-- **Edit-preserving re-import** — wire `reconcile.ts` into the import wizard's
-  commit so dropping in a fresh export merges instead of replacing.
-- **Analytics** — currently a placeholder route; the data model already captures
-  what it needs.
-- **Sync** — the deterministic, relocatable file layout is designed to drop into
-  a synced folder later.
+- **Targets** — nothing in the model expresses "this envelope needs €300 a
+  month". Assignment is manual, helped by `suggest.ts` proposing what you did
+  before. A target would be a new field on `Category` plus a column in the Plan
+  view; the engine wouldn't change, since a target is an input like an
+  assignment, not a derived number.
+- **Recurring transfers** — `scheduledSuccessor` spawns the next occurrence of a
+  scheduled row, but a transfer is two linked rows, so the successor has to be
+  pair-aware. Repeat is disabled for transfers until it is.
+- **Linking after an import** — `findTransferCandidates` is reachable from the
+  sidebar, which is not when you need it. The import wizard's commit step is.
