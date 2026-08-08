@@ -99,6 +99,10 @@ interface Actions {
   coverShortfall: (month: MonthKey, from: Ulid, to: Ulid) => void;
   addTransaction: (tx: Transaction) => void;
   addTransactions: (txs: Transaction[]) => void;
+  /** Record money moving between two accounts (creates both linked legs). */
+  addTransfer: (args: ops.TransferArgs) => void;
+  /** Edit one transfer leg; the other mirrors (amount/date/memo/accounts). */
+  updateTransfer: (id: Ulid, patch: { accountId?: Ulid; counterAccountId?: Ulid; date?: string; amount?: Cents; memo?: string; cleared?: "cleared" | "uncleared" | "reconciled" }) => void;
   setTransactions: (txs: Transaction[]) => void;
   updateTransaction: (id: Ulid, patch: Partial<Omit<Transaction, "id">>) => void;
   deleteTransaction: (id: Ulid) => void;
@@ -507,6 +511,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       coverShortfall: (m, from, to) => apply((b) => ops.coverShortfall(b, m, from, to)),
       addTransaction: (tx) => apply((b) => ops.addTransaction(b, tx)),
       addTransactions: (txs) => apply((b) => ops.addTransactions(b, txs)),
+      addTransfer: (args) => apply((b) => ops.addTransfer(b, args)),
+      updateTransfer: (id, patch) => apply((b) => ops.updateTransfer(b, id, patch)),
       setTransactions: (txs) => apply((b) => ops.setTransactions(b, txs)),
       updateTransaction: (id, patch) => apply((b) => ops.updateTransaction(b, id, patch)),
       deleteTransaction: (id) => apply((b) => ops.deleteTransaction(b, id)),

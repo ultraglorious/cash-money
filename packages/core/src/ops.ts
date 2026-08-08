@@ -281,8 +281,115 @@ export function updateTransaction(
   return { ...b, transactions: replace(b.transactions, txId, (t) => ({ ...t, ...patch })) };
 }
 
+/** Both row ids of a transfer pair (or just the id when the row isn't one). */
+function pairIds(b: LoadedBudget, txId: Ulid): Ulid[] {
+  const t = b.transactions.find((x) => x.id === txId);
+  if (!t?.transfer) return [txId];
+  const other = b.transactions.find((x) => x.id !== txId && x.transfer?.pairId === t.transfer!.pairId);
+  return other ? [txId, other.id] : [txId];
+}
+
+/** A transfer's payee is derived, direction-aware text. */
+function transferPayee(amount: number, counterName: string): string {
+  return amount < 0 ? `Transfer to: ${counterName}` : `Transfer from: ${counterName}`;
+}
+
+export interface TransferArgs {
+  /** The account the user is entering the transfer FROM the perspective of. */
+  accountId: Ulid;
+  counterAccountId: Ulid;
+  date: ISODate;
+  /** Signed for `accountId`'s leg: negative = money leaves it. */
+  amount: Cents;
+  memo: string;
+  approved: boolean;
+  clearedThis: ClearedStatus;
+  clearedCounter: ClearedStatus;
+}
+
+/** Record money moving between two accounts: both legs, linked by a pair id. */
+export function addTransfer(b: LoadedBudget, args: TransferArgs): LoadedBudget {
+  const nameOf = (id: Ulid): string => b.accounts.find((a) => a.id === id)?.name ?? "—";
+  const pairId = newId();
+  const common = { date: args.date, effectiveDate: args.date, memo: args.memo, approved: args.approved };
+  const legA: Transaction = {
+    id: newId(),
+    accountId: args.accountId,
+    ...common,
+    payee: transferPayee(args.amount, nameOf(args.counterAccountId)),
+    amount: args.amount,
+    cleared: args.clearedThis,
+    transfer: { counterAccountId: args.counterAccountId, pairId },
+  };
+  const legB: Transaction = {
+    id: newId(),
+    accountId: args.counterAccountId,
+    ...common,
+    payee: transferPayee(-args.amount, nameOf(args.accountId)),
+    amount: -args.amount as Cents,
+    cleared: args.clearedCounter,
+    transfer: { counterAccountId: args.accountId, pairId },
+  };
+  return addTransactions(b, [legA, legB]);
+}
+
+/**
+ * Edit one leg of a transfer and mirror the change onto the other: date,
+ * memo, and amount stay equal-and-opposite, and re-pointing either end keeps
+ * the pair consistent. Cleared status stays per-leg (each side settles at its
+ * own bank in its own time).
+ */
+export function updateTransfer(
+  b: LoadedBudget,
+  txId: Ulid,
+  patch: { accountId?: Ulid; counterAccountId?: Ulid; date?: ISODate; amount?: Cents; memo?: string; cleared?: ClearedStatus },
+): LoadedBudget {
+  const t = b.transactions.find((x) => x.id === txId);
+  if (!t?.transfer) return b;
+  const otherId = pairIds(b, txId).find((id) => id !== txId);
+  const nameOf = (id: Ulid): string => b.accounts.find((a) => a.id === id)?.name ?? "—";
+
+  const accountId = patch.accountId ?? t.accountId;
+  const counterAccountId = patch.counterAccountId ?? t.transfer.counterAccountId;
+  const date = patch.date ?? t.date;
+  const amount = patch.amount ?? t.amount;
+  const memo = patch.memo ?? t.memo;
+
+  const transactions = b.transactions.map((x) => {
+    if (x.id === txId) {
+      return {
+        ...x,
+        accountId,
+        date,
+        effectiveDate: x.effectiveDate === x.date ? date : x.effectiveDate,
+        amount,
+        memo,
+        payee: transferPayee(amount, nameOf(counterAccountId)),
+        cleared: patch.cleared ?? x.cleared,
+        transfer: { ...x.transfer!, counterAccountId },
+      };
+    }
+    if (otherId && x.id === otherId) {
+      return {
+        ...x,
+        accountId: counterAccountId,
+        date,
+        effectiveDate: x.effectiveDate === x.date ? date : x.effectiveDate,
+        amount: -amount as Cents,
+        memo,
+        payee: transferPayee(-amount, nameOf(accountId)),
+        transfer: { ...x.transfer!, counterAccountId: accountId },
+      };
+    }
+    return x;
+  });
+  return { ...b, transactions };
+}
+
+/** Deleting one leg of a transfer removes both — a lone leg is a lie. */
 export function deleteTransaction(b: LoadedBudget, txId: Ulid): LoadedBudget {
-  return { ...b, transactions: b.transactions.filter((t) => t.id !== txId) };
+  const ids = new Set(pairIds(b, txId));
+  return { ...b, transactions: b.transactions.filter((t) => !ids.has(t.id)) };
 }
 
 /**
@@ -317,7 +424,8 @@ export function approveTransaction(b: LoadedBudget, txId: Ulid): LoadedBudget {
  * next occurrence into the schedule.
  */
 export function approveTransactions(b: LoadedBudget, txIds: readonly Ulid[]): LoadedBudget {
-  const ids = new Set(txIds);
+  // A transfer pair approves as one: a half-approved pair would unbalance accounts.
+  const ids = new Set(txIds.flatMap((id) => pairIds(b, id)));
   const successors: Transaction[] = [];
   const transactions = b.transactions.map((t) => {
     if (!ids.has(t.id) || t.approved) return t;
@@ -344,9 +452,9 @@ export function setClearedStatus(b: LoadedBudget, txIds: readonly Ulid[], cleare
   };
 }
 
-/** Delete many transactions in one pass. */
+/** Delete many transactions in one pass; transfer pairs go together. */
 export function deleteTransactions(b: LoadedBudget, txIds: readonly Ulid[]): LoadedBudget {
-  const ids = new Set(txIds);
+  const ids = new Set(txIds.flatMap((id) => pairIds(b, id)));
   return { ...b, transactions: b.transactions.filter((t) => !ids.has(t.id)) };
 }
 

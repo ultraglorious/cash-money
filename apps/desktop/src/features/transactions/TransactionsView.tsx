@@ -30,7 +30,7 @@ const todayIso = () => new Date().toISOString().slice(0, 10);
 const FREQ_LABEL: Record<string, string> = { weekly: "weekly", biweekly: "2-weekly", monthly: "monthly", yearly: "yearly" };
 
 export function TransactionsView() {
-  const { budget, projection, currency, view, accountName, categoryName, addTransaction, updateTransaction, approveTransaction, approveTransactions, deleteTransaction, deleteTransactions, setClearedStatus, setSplits } = useApp();
+  const { budget, projection, currency, view, accountName, categoryName, addTransaction, addTransfer, updateTransaction, updateTransfer, approveTransaction, approveTransactions, deleteTransaction, deleteTransactions, setClearedStatus, setSplits } = useApp();
   const [query, setQuery] = useState("");
   const [account, setAccount] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -52,7 +52,7 @@ export function TransactionsView() {
   };
 
   const payees = useMemo(
-    () => [...new Set(budget.transactions.map((t) => t.payee).filter((p) => p.trim() && !p.startsWith("Transfer :")))].sort(),
+    () => [...new Set(budget.transactions.filter((t) => !t.transfer).map((t) => t.payee).filter((p) => p.trim() && !p.startsWith("Transfer :")))].sort(),
     [budget],
   );
   const lastCatByPayee = useMemo(() => {
@@ -172,7 +172,23 @@ export function TransactionsView() {
     const approved = data.date <= todayIso();
     // A card swipe isn't PAID until its bill is — new credit-card entries
     // start uncleared; debit entries settle immediately and start cleared.
-    const isCard = budget.accounts.find((a) => a.id === data.accountId)?.type === "creditCard";
+    const cardOf = (id: Ulid) => budget.accounts.find((a) => a.id === id)?.type === "creditCard";
+    const isCard = cardOf(data.accountId);
+    if (data.transferAccountId) {
+      const legCleared = (id: Ulid) => (!approved || cardOf(id) ? ("uncleared" as const) : ("cleared" as const));
+      addTransfer({
+        accountId: data.accountId,
+        counterAccountId: data.transferAccountId,
+        date: data.date,
+        amount: data.amount,
+        memo: data.memo,
+        approved,
+        clearedThis: legCleared(data.accountId),
+        clearedCounter: legCleared(data.transferAccountId),
+      });
+      setAdding(false);
+      return;
+    }
     const tx: Transaction = {
       id: newId(),
       accountId: data.accountId,
@@ -197,6 +213,18 @@ export function TransactionsView() {
     setAdding(false);
   };
   const saveEdit = (t: Transaction, data: EditorSubmit) => {
+    if (t.transfer) {
+      updateTransfer(t.id, {
+        accountId: data.accountId,
+        counterAccountId: data.transferAccountId ?? t.transfer.counterAccountId,
+        date: data.date,
+        amount: data.amount,
+        memo: data.memo,
+        cleared: data.cleared,
+      });
+      setEditingId(null);
+      return;
+    }
     const keepEffective = t.effectiveDate !== t.date;
     updateTransaction(t.id, {
       accountId: data.accountId,
@@ -290,7 +318,7 @@ export function TransactionsView() {
           <Collapse in={schedOpen}>
             {scheduled.map((t) => {
               const due = t.date <= todayIso();
-              if (editingId === t.id && !t.splits && !t.transfer) {
+              if (editingId === t.id && !t.splits) {
                 return (
                   <EditorRow key={t.id} single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
                 );
@@ -298,14 +326,14 @@ export function TransactionsView() {
               return (
                 <Box
                   key={t.id}
-                  onDoubleClick={() => !t.splits && !t.transfer && setEditingId(t.id)}
+                  onDoubleClick={() => !t.splits && setEditingId(t.id)}
                   onClick={(e) => { if (e.shiftKey || e.metaKey || e.ctrlKey) rowSelect(scheduled, t.id, e); }}
                   onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
                   style={{
                     display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px",
                     borderTop: "1px solid var(--mantine-color-orange-2)",
                     background: due ? "light-dark(var(--mantine-color-orange-1), rgba(255,146,43,0.16))" : "light-dark(var(--mantine-color-orange-0), rgba(255,146,43,0.06))",
-                    cursor: !t.splits && !t.transfer ? "pointer" : "default",
+                    cursor: !t.splits ? "pointer" : "default",
                   }}
                 >
                   <Checkbox
@@ -372,17 +400,17 @@ export function TransactionsView() {
         <div style={{ height: virt.getTotalSize(), position: "relative" }}>
           {virt.getVirtualItems().map((vi) => {
             const t = approved[vi.index]!;
-            const editing = editingId === t.id && !t.splits && !t.transfer;
+            const editing = editingId === t.id && !t.splits;
             return (
               <div key={t.id} ref={virt.measureElement} data-index={vi.index} style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vi.start}px)` }}>
                 {editing ? (
                   <EditorRow single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
                 ) : (
                   <Box
-                    onDoubleClick={() => !t.splits && !t.transfer && setEditingId(t.id)}
+                    onDoubleClick={() => !t.splits && setEditingId(t.id)}
                     onClick={(e) => { if (e.shiftKey || e.metaKey || e.ctrlKey) rowSelect(approved, t.id, e); }}
                     onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
-                    style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--mantine-color-default-border)", cursor: !t.splits && !t.transfer ? "pointer" : "default", background: selected.has(t.id) ? "var(--mantine-color-indigo-light)" : undefined }}
+                    style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--mantine-color-default-border)", cursor: !t.splits ? "pointer" : "default", background: selected.has(t.id) ? "var(--mantine-color-indigo-light)" : undefined }}
                   >
                     <Checkbox
                       size="xs"

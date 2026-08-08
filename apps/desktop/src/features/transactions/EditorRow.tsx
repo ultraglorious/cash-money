@@ -19,7 +19,11 @@ export interface EditorSubmit {
   splits?: SplitLine[];
   /** Present => the transaction repeats on this cadence. */
   recurrence?: { freq: RecurrenceFreq; anchorDay?: number };
+  /** Present => this is a transfer to/from that account (both legs created/mirrored). */
+  transferAccountId?: Ulid;
 }
+
+const TRANSFER_PREFIX = "Transfer to/from: ";
 
 const REPEAT_NONE = "none";
 const REPEAT_OPTIONS = [
@@ -75,6 +79,15 @@ export function EditorRow({
   const [splits, setSplits] = useState<SplitLine[] | null>(null);
   const [splitOpen, splitCtrl] = useDisclosure(false);
   const [repeat, setRepeat] = useState<string>(initial?.recurrence?.freq ?? REPEAT_NONE);
+  const [transferTo, setTransferTo] = useState<string | null>(initial?.transfer?.counterAccountId ?? null);
+
+  // "Transfer to/from: <Account>" options offered in the payee field — picking
+  // one turns the row into a transfer (both legs, linked). Excludes this row's
+  // own account; a transfer edit stays a transfer (delete to un-transfer).
+  const transferByLabel = new Map(
+    accountData.filter((a) => a.value !== accountId).map((a) => [`${TRANSFER_PREFIX}${a.label}`, a.value]),
+  );
+  const nameOfAccount = (id: string | null) => accountData.find((a) => a.value === id)?.label ?? "—";
 
   const signedMagnitude = (): Cents => {
     const cents = Math.round(Number(magnitude || 0) * 100);
@@ -87,16 +100,26 @@ export function EditorRow({
     if (!valid || !accountId || !date) return;
     const iso = toIso(date);
     const recurrence =
-      repeat === REPEAT_NONE
+      repeat === REPEAT_NONE || transferTo
         ? undefined
         : { freq: repeat as RecurrenceFreq, anchorDay: Number(iso.slice(8, 10)) };
     const base = { accountId: accountId as Ulid, date: iso, payee: payee.trim(), memo: memo.trim(), cleared: initial?.cleared ?? "cleared", recurrence };
-    if (splits) onSubmit({ ...base, amount: splitTotal, splits });
+    if (transferTo) onSubmit({ ...base, amount: signedMagnitude(), transferAccountId: transferTo as Ulid });
+    else if (splits) onSubmit({ ...base, amount: splitTotal, splits });
     else onSubmit({ ...base, amount: signedMagnitude(), ...(categoryId ? { categoryId: categoryId as Ulid } : {}) });
   };
 
   const onPayeePick = (value: string) => {
     setPayee(value);
+    const target = transferByLabel.get(value);
+    if (target) {
+      setTransferTo(target);
+      setSplits(null);
+      setCategoryId(null);
+      return;
+    }
+    // An existing transfer stays a transfer even while the text is mid-edit.
+    if (!initial?.transfer) setTransferTo(null);
     if (!categoryTouched && !splits) {
       const last = lastCategoryOf(value);
       if (last) setCategoryId(last);
@@ -116,8 +139,28 @@ export function EditorRow({
       <Box />
       <DatePickerInput size="xs" value={date} onChange={setDate} valueFormat="DD MMM" popoverProps={{ withinPortal: true }} />
       {!single && <Select size="xs" placeholder="Account" data={accountData} value={accountId} onChange={setAccountId} searchable comboboxProps={{ withinPortal: true }} />}
-      <Autocomplete size="xs" placeholder="Payee" data={payees} value={payee} onChange={onPayeePick} onOptionSubmit={onPayeePick} comboboxProps={{ withinPortal: true }} />
-      {splits ? (
+      <Autocomplete
+        size="xs"
+        placeholder="Payee"
+        data={[
+          { group: "Transfer to/from", items: [...transferByLabel.keys()] },
+          { group: "Payees", items: payees },
+        ]}
+        value={payee}
+        onChange={onPayeePick}
+        onOptionSubmit={onPayeePick}
+        comboboxProps={{ withinPortal: true }}
+      />
+      {transferTo ? (
+        <Group gap={4} wrap="nowrap">
+          <Badge color="blue" variant="light">Transfer: {nameOfAccount(transferTo)}</Badge>
+          {!initial?.transfer && (
+            <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => { setTransferTo(null); setPayee(""); }} aria-label="Clear transfer">
+              <IconX size={13} />
+            </ActionIcon>
+          )}
+        </Group>
+      ) : splits ? (
         <Group gap={4} wrap="nowrap">
           <Badge color="grape" variant="light" style={{ cursor: "pointer" }} onClick={splitCtrl.open}>Split ({splits.length})</Badge>
           <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => setSplits(null)} aria-label="Clear split"><IconX size={13} /></ActionIcon>
@@ -159,9 +202,10 @@ export function EditorRow({
       <Select
         size="xs"
         data={REPEAT_OPTIONS}
-        value={repeat}
+        value={transferTo ? REPEAT_NONE : repeat}
         onChange={(v) => setRepeat(v ?? REPEAT_NONE)}
         allowDeselect={false}
+        disabled={!!transferTo}
         comboboxProps={{ withinPortal: true }}
         aria-label="Repeat"
       />
