@@ -105,6 +105,59 @@ describe("findTransferCandidates", () => {
   });
 });
 
+describe("shapes that must never be offered (they would move money, not describe it)", () => {
+  // Money coming back INTO an account against the envelope it was spent from.
+  // Same size, opposite direction, days apart — it looks exactly like a transfer
+  // and is nothing of the sort: the category is the whole point of the row.
+  const withdrawal = f.txn({ id: f.tid("TWDR"), accountId: BRK, date: "2026-06-10", amount: -35000 as Cents, payee: "Withdrawal", categoryId: undefined });
+  const refund = f.txn({ id: f.tid("TRFD"), accountId: PCHK, date: "2026-06-11", amount: 35000 as Cents, categoryId: GRO, payee: "Supermarket refund" });
+
+  it("never offers a refund as the arriving leg", () => {
+    expect(findTransferCandidates(budgetOf([withdrawal, refund]))).toEqual([]);
+  });
+
+  it("refuses one even when handed it directly, so the op cannot lose an envelope", () => {
+    const b = budgetOf([withdrawal, refund]);
+    const { budget, linked } = ops.linkTransfers(b, [{ outflowId: withdrawal.id, inflowId: refund.id }]);
+    expect(linked).toBe(0);
+    expect(budget.transactions.find((t) => t.id === refund.id)!.categoryId).toBe(GRO);
+  });
+
+  it("leaves credit-card legs alone — arriving money there is a card payment", () => {
+    const JCARD = f.tid("AJCD");
+    const b = budgetOf([]);
+    b.accounts = [...b.accounts, f.account({ id: JCARD, name: "Joint Card", type: "creditCard", onBudget: true, household: "Joint" })];
+    b.transactions = [
+      f.txn({ id: f.tid("TCPO"), accountId: PCHK, date: "2026-06-14", amount: -30000 as Cents, categoryId: CONTRIB, payee: "Joint Card" }),
+      f.txn({ id: f.tid("TCPI"), accountId: JCARD, date: "2026-06-14", amount: 30000 as Cents, payee: "From Eric", categoryId: undefined }),
+    ];
+    expect(findTransferCandidates(b)).toEqual([]);
+  });
+
+  it("linking everything on offer leaves every derived number untouched", () => {
+    const b = budgetOf([
+      f.txn({ id: f.tid("TPAY"), accountId: PCHK, date: "2026-06-01", amount: 500000 as Cents, categoryId: RTA, payee: "Employer" }),
+      sendLeg,
+      recvLeg,
+      withdrawal,
+      refund,
+      f.txn({ id: f.tid("TINV"), accountId: PCHK, date: "2026-06-05", amount: -80000 as Cents, categoryId: GRO, payee: "Broker" }),
+      f.txn({ id: f.tid("TIND"), accountId: BRK, date: "2026-06-05", amount: 80000 as Cents, payee: "Deposit", categoryId: undefined }),
+    ]);
+    const before = computeProjection(b);
+    const pairs = findTransferCandidates(b).map(({ outflowId, inflowId }) => ({ outflowId, inflowId }));
+    expect(pairs.length).toBeGreaterThan(0);
+    const after = computeProjection(ops.linkTransfers(b, pairs).budget);
+
+    for (const month of ["2026-06", "2026-07"] as const) {
+      expect([...after.readyToAssignByHousehold(month)]).toEqual([...before.readyToAssignByHousehold(month)]);
+      for (const c of [GRO, CONTRIB, RTA]) {
+        expect(after.availableOf(c, month)).toBe(before.availableOf(c, month));
+      }
+    }
+  });
+});
+
 describe("ops.linkTransfers", () => {
   it("links both legs with canonical payees and keeps the funding envelope", () => {
     const b = budgetOf([sendLeg, recvLeg]);

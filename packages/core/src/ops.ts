@@ -329,7 +329,11 @@ export function normalizeTransferPayees(b: LoadedBudget): { budget: LoadedBudget
  * that global analytics now recognise the pair without having to guess.
  *
  * Pairs whose rows have gone missing, or that already belong to a transfer, are
- * skipped rather than treated as an error.
+ * skipped rather than treated as an error. So are the two shapes where linking
+ * would move money instead of describing it, which is the one thing this must
+ * never do: an arriving leg that carries a spending envelope (that's a REFUND —
+ * the category is the point of the row), and a leg on a credit card (the engine
+ * reads money arriving on a card as a payment against its payment envelope).
  */
 export function linkTransfers(
   b: LoadedBudget,
@@ -337,6 +341,9 @@ export function linkTransfers(
 ): { budget: LoadedBudget; linked: number } {
   const byId = new Map(b.transactions.map((t) => [t.id, t]));
   const nameOf = new Map(b.accounts.map((a) => [a.id, a.name]));
+  const isCard = new Set(b.accounts.filter((a) => a.type === "creditCard").map((a) => a.id));
+  const incomeGroups = new Set(b.groups.filter((g) => g.kind === "income").map((g) => g.id));
+  const incomeCats = new Set(b.categories.filter((c) => incomeGroups.has(c.groupId)).map((c) => c.id));
   const patch = new Map<Ulid, Transaction>();
 
   for (const { outflowId, inflowId } of pairs) {
@@ -344,6 +351,8 @@ export function linkTransfers(
     const inn = byId.get(inflowId);
     if (!out || !inn || out.transfer || inn.transfer) continue;
     if (patch.has(out.id) || patch.has(inn.id)) continue;
+    if (inn.categoryId && !incomeCats.has(inn.categoryId)) continue; // a refund, not an arrival
+    if (isCard.has(out.accountId) || isCard.has(inn.accountId)) continue;
     const pairId = newId();
     patch.set(out.id, {
       ...out,

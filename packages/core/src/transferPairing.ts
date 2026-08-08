@@ -89,13 +89,22 @@ export function findTransferCandidates(b: LoadedBudget, opts: PairingOptions = {
   const incomeGroups = new Set(b.groups.filter((g) => g.kind === "income").map((g) => g.id));
   const incomeCats = new Set(b.categories.filter((c) => incomeGroups.has(c.groupId)).map((c) => c.id));
 
-  const eligible = (t: Transaction): boolean => t.approved && !t.transfer && !t.splits && accounts.has(t.accountId);
+  // A leg on a credit card is never offered: the engine reads money arriving on
+  // a card as a payment and draws down that card's payment envelope, so linking
+  // one would move money rather than just describe it.
+  const eligible = (t: Transaction): boolean =>
+    t.approved && !t.transfer && !t.splits && accounts.get(t.accountId)?.type !== "creditCard";
   const outflows = b.transactions.filter((t) => eligible(t) && t.amount < 0);
 
   // Inflows indexed by magnitude: the only pairs worth scoring are exact matches.
   const inflowsByAmount = new Map<number, Transaction[]>();
   for (const t of b.transactions) {
     if (!eligible(t) || t.amount <= 0) continue;
+    // Money arriving against a spending envelope is a REFUND, not a transfer:
+    // the category is the whole point of the row, and treating it as an arriving
+    // leg would strip it and hand the money back to Ready-to-Assign. Only bare
+    // inflows and income ones can be the receiving half of a transfer.
+    if (t.categoryId && !incomeCats.has(t.categoryId)) continue;
     const list = inflowsByAmount.get(t.amount) ?? [];
     list.push(t);
     inflowsByAmount.set(t.amount, list);
