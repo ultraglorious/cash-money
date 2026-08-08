@@ -100,6 +100,11 @@ export function WaterfallTab({ from, to }: { from: MonthKey; to: MonthKey }) {
       </Group>
 
       <Paper withBorder p="md" radius="md">
+        {level.by !== "account" && !level.accountId && (
+          <Text size="xs" c="dimmed" mb={4}>
+            Global view: transfers between households are netted out. Drill into an account to see its own ins and outs.
+          </Text>
+        )}
         {nodes.length === 0 ? (
           <Text size="sm" c="dimmed">Nothing in this range.</Text>
         ) : (

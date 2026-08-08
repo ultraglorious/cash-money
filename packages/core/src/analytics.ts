@@ -1,6 +1,6 @@
 import type { Ulid } from "./ids.js";
 import type { Cents } from "./money.js";
-import { compareMonth, monthKeyOf, monthRange, type MonthKey } from "./time.js";
+import { compareMonth, epochDay, monthKeyOf, monthRange, type MonthKey } from "./time.js";
 import type { LoadedBudget, Transaction } from "./model/types.js";
 
 /**
@@ -32,6 +32,60 @@ function groupLabels(b: LoadedBudget): Map<Ulid, string> {
   );
 }
 
+// ---- Household-to-household transfers ----------------------------------------
+
+/** Days the two legs of a household contribution may sit apart. */
+const HOUSEHOLD_TRANSFER_WINDOW = 10;
+
+/**
+ * Money moved BETWEEN households is deliberately recorded as income on the
+ * receiving side and a categorised expense on the sending side — that's what
+ * makes each household's Ready-to-Assign correct. But globally it never
+ * entered or left the budget, and when the two legs straddle a month
+ * boundary it fabricates a loss one month and a windfall the next. Detect
+ * the pairs: an income-to-inflow row in one household matching an
+ * equal-and-opposite categorised row in a DIFFERENT household within a few
+ * days. Greedy nearest-date matching; each row pairs once.
+ */
+export function householdTransferIds(b: LoadedBudget): Set<Ulid> {
+  const householdOf = new Map(b.accounts.filter((a) => a.onBudget).map((a) => [a.id, a.household]));
+  const incomeGroups = new Set(b.groups.filter((g) => g.kind === "income").map((g) => g.id));
+  const incomeCats = new Set(b.categories.filter((c) => incomeGroups.has(c.groupId)).map((c) => c.id));
+
+  const eligible = (t: Transaction): boolean =>
+    t.approved && !t.transfer && !t.splits && householdOf.has(t.accountId) && !!householdOf.get(t.accountId);
+  const incomes = b.transactions.filter(
+    (t) => eligible(t) && t.amount > 0 && !!t.categoryId && incomeCats.has(t.categoryId),
+  );
+  const expenses = b.transactions.filter(
+    (t) => eligible(t) && t.amount < 0 && !!t.categoryId && !incomeCats.has(t.categoryId),
+  );
+
+  const paired = new Set<Ulid>();
+  const usedExpense = new Set<Ulid>();
+  for (const inc of incomes) {
+    const incEpoch = epochDay(inc.date);
+    const incHousehold = householdOf.get(inc.accountId);
+    let best: Transaction | undefined;
+    let bestDelta = Infinity;
+    for (const exp of expenses) {
+      if (usedExpense.has(exp.id) || exp.amount !== -inc.amount) continue;
+      if (householdOf.get(exp.accountId) === incHousehold) continue; // must CROSS households
+      const delta = Math.abs(epochDay(exp.date) - incEpoch);
+      if (delta <= HOUSEHOLD_TRANSFER_WINDOW && delta < bestDelta) {
+        best = exp;
+        bestDelta = delta;
+      }
+    }
+    if (best) {
+      usedExpense.add(best.id);
+      paired.add(inc.id);
+      paired.add(best.id);
+    }
+  }
+  return paired;
+}
+
 // ---- Cashflow (income vs spending per month) --------------------------------
 
 export interface MonthlyCashflow {
@@ -42,15 +96,19 @@ export interface MonthlyCashflow {
   net: Cents;
 }
 
-/** Income vs spending per month across all on-budget accounts, gaps filled. */
+/**
+ * Income vs spending per month across all on-budget accounts, gaps filled.
+ * Global perspective: household-to-household transfers are netted out.
+ */
 export function monthlyCashflow(b: LoadedBudget): MonthlyCashflow[] {
   const onBudget = new Set(b.accounts.filter((a) => a.onBudget).map((a) => a.id));
   const incomeGroups = new Set(b.groups.filter((g) => g.kind === "income").map((g) => g.id));
   const incomeCats = new Set(b.categories.filter((c) => incomeGroups.has(c.groupId)).map((c) => c.id));
+  const internal = householdTransferIds(b);
 
   const perMonth = new Map<MonthKey, { income: number; spending: number }>();
   for (const t of b.transactions) {
-    if (!t.approved || !onBudget.has(t.accountId) || t.transfer) continue;
+    if (!t.approved || !onBudget.has(t.accountId) || t.transfer || internal.has(t.id)) continue;
     const m = monthKeyOf(t.effectiveDate);
     const slot = perMonth.get(m) ?? { income: 0, spending: 0 };
     for (const line of linesOf(t)) {
@@ -144,6 +202,9 @@ export function flows(b: LoadedBudget, by: FlowDimension, f: FlowFilter): FlowNo
   const groupName = groupLabels(b);
   const catName = new Map(b.categories.map((c) => [c.id, c.name]));
   const onBudget = new Set(b.accounts.filter((a) => a.onBudget).map((a) => a.id));
+  // Global category views net out household-to-household transfers; inside
+  // one account (and in per-account totals) the money genuinely moved.
+  const internal = by !== "account" && !f.accountId ? householdTransferIds(b) : new Set<Ulid>();
 
   const out = new Map<string, { label: string; amount: number }>();
   const add = (key: string, label: string, amount: number) => {
@@ -153,7 +214,7 @@ export function flows(b: LoadedBudget, by: FlowDimension, f: FlowFilter): FlowNo
   };
 
   for (const t of b.transactions) {
-    if (!t.approved) continue;
+    if (!t.approved || internal.has(t.id)) continue;
     const m = monthKeyOf(t.effectiveDate);
     if (compareMonth(m, f.from) < 0 || compareMonth(m, f.to) > 0) continue;
     if (f.accountId && t.accountId !== f.accountId) continue;

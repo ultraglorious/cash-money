@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Cents } from "./money.js";
 import type { LoadedBudget, Transaction } from "./model/types.js";
-import { detailTree, flows, monthlyCashflow, netWorthSeries, TRANSFERS, UNCATEGORIZED } from "./analytics.js";
+import { detailTree, flows, householdTransferIds, monthlyCashflow, netWorthSeries, TRANSFERS, UNCATEGORIZED } from "./analytics.js";
 import * as f from "../test/fixtures/factories.js";
 
 const CHK = f.tid("ACHK");
@@ -106,6 +106,53 @@ describe("flows", () => {
     expect(marchOnly).toEqual([{ key: "Cafe", label: "Cafe", amount: -5000 }]);
     const inTracking = flows(base(txs), "payee", { from: "2026-03", to: "2026-03", accountId: TRK });
     expect(inTracking).toEqual([{ key: "Deposit", label: "Deposit", amount: 50000 }]);
+  });
+});
+
+describe("householdTransferIds (global perspective)", () => {
+  const JNT = f.tid("AJNT");
+  const CONTRIB = f.tid("CCON");
+
+  function withHouseholds(extra: Transaction[]): LoadedBudget {
+    const b = base(extra);
+    b.accounts = [
+      f.account({ id: CHK, name: "Checking", type: "checking", onBudget: true, household: "Personal" }),
+      f.account({ id: JNT, name: "Joint", type: "checking", onBudget: true, household: "Joint" }),
+    ];
+    b.categories = [...b.categories, f.category({ id: CONTRIB, groupId: GEVD, name: "Joint contribution" })];
+    return b;
+  }
+
+  // Personal sends June 28; Joint records it as July income a few days later.
+  const send = f.txn({ id: f.tid("HT1"), accountId: CHK, date: "2026-06-28", amount: -200000 as Cents, categoryId: f.tid("CCON"), payee: "Joint" });
+  const recv = f.txn({ id: f.tid("HT2"), accountId: f.tid("AJNT"), date: "2026-07-01", amount: 200000 as Cents, categoryId: RTA, payee: "From Personal" });
+  const salary = f.txn({ id: f.tid("HT3"), accountId: f.tid("AJNT"), date: "2026-07-02", amount: 200000 as Cents, categoryId: RTA, payee: "Employer" });
+
+  it("pairs equal-and-opposite cross-household rows within the window, each leg once", () => {
+    const ids = householdTransferIds(withHouseholds([send, recv, salary]));
+    expect(ids).toEqual(new Set([send.id, recv.id])); // salary left alone: send already claimed
+  });
+
+  it("does not pair same-household or far-apart rows", () => {
+    const sameHouse = { ...recv, id: f.tid("HT4"), accountId: CHK };
+    expect(householdTransferIds(withHouseholds([send, sameHouse]))).toEqual(new Set());
+    const tooLate = { ...recv, id: f.tid("HT5"), date: "2026-07-20" };
+    expect(householdTransferIds(withHouseholds([send, tooLate]))).toEqual(new Set());
+  });
+
+  it("nets the pair out of cashflow and global section flows, but keeps it inside the account drill", () => {
+    const b = withHouseholds([send, recv, salary]);
+    const june = monthlyCashflow(b).find((r) => r.month === "2026-06");
+    const july = monthlyCashflow(b).find((r) => r.month === "2026-07")!;
+    expect(june?.spending ?? 0).toBe(0); // no fabricated June loss
+    expect(july.income).toBe(200000); // only the real salary
+
+    const global = flows(b, "section", { from: "2026-06", to: "2026-07" });
+    expect(global.find((n) => n.key === GEVD)).toBeUndefined(); // contribution netted out
+    expect(global.find((n) => n.key === GINC)!.amount).toBe(200000);
+
+    const insidePersonal = flows(b, "section", { from: "2026-06", to: "2026-07", accountId: CHK });
+    expect(insidePersonal.find((n) => n.key === GEVD)!.amount).toBe(-200000); // real outflow from HERE
   });
 });
 

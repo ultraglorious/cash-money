@@ -83,6 +83,9 @@ export function OverviewTab({ from, to }: { from: MonthKey; to: MonthKey }) {
             ]}
           />
         )}
+        <Text size="xs" c="dimmed" mt={6}>
+          Global view: transfers between households are netted out, so moving money early or late never shows as a loss or a windfall.
+        </Text>
       </Paper>
     </Stack>
   );
