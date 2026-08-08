@@ -163,8 +163,14 @@ deterministically (sorted keys, id-sorted collections), which makes two saves of
 the same data byte-identical, and written **atomically** (temp file + rename).
 The file can live anywhere — putting it in a cloud-synced folder (iCloud Drive,
 Dropbox, Syncthing) is the supported way to use one budget on several machines,
-**one at a time**: the app tracks the file's mtime and refuses to overwrite a
-file that changed underneath it, surfacing a reload-or-overwrite choice instead.
+**including at the same time**: the app watches the file (poll + on refocus), an
+idle machine silently follows another machine's saves, and when both machines
+hold changes a **three-way merge** (`merge3.ts`) folds them together — base is
+the last synced state, every collection merges by stable key, deletions never
+beat edits, and the only true conflict (the same record edited differently on
+both sides) is resolved local-wins with a toast reporting it. The mtime guard
+remains the write-time tripwire that triggers the merge; a blocking banner
+appears only when merging itself is impossible (unreadable file, newer format).
 A `.bak` sibling of the previous session's state is kept alongside.
 
 The tiny `app.json` in the platform app-data folder only remembers *which* file

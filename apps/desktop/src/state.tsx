@@ -1,13 +1,17 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { Alert, Button, Center, Group, Loader, Stack, Text } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import {
   BudgetRepository,
   computeProjection,
+  mergeBudgetFiles,
   newId,
   ops,
   parseBudgetFile,
+  reportTookFromFile,
   serializeBudgetFile,
   type AccountType,
+  type BudgetFileData,
   type Cents,
   type CurrencyConfig,
   type ImportSourceEntry,
@@ -25,6 +29,7 @@ import {
   isConflictError,
   isTauri,
   readBudgetFile,
+  statBudgetFile,
   TauriFileSystem,
   writeBudgetFile,
 } from "./platform/tauriFs";
@@ -160,6 +165,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const sourcesRef = useRef<ImportSourceEntry[]>([]);
   const backedUpRef = useRef(false);
   const conflictRef = useRef(false);
+  /** The last state known to be in sync with the file — the base for three-way merges. */
+  const baseRef = useRef<BudgetFileData | null>(null);
+  /** Set when a dispatch reflects what's ALREADY on disk (adopt/merge) — don't save it back. */
+  const skipPersistRef = useRef(false);
   const [filePath, setFilePath] = useState<string | null>(null);
   const [fileConflict, setFileConflict] = useState(false);
 
@@ -184,17 +193,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           backedUpRef.current = true;
           await backupBudgetFile(path).catch(() => undefined);
         }
-        const text = serializeBudgetFile(
-          { loaded: snapshot, savedFormats: formatsRef.current, importSources: sourcesRef.current },
-          new Date().toISOString(),
-        );
+        const data: BudgetFileData = { loaded: snapshot, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+        const text = serializeBudgetFile(data, new Date().toISOString());
         fileMtimeRef.current = await writeBudgetFile(path, text, fileMtimeRef.current);
+        baseRef.current = data;
       } catch (e) {
         if (isConflictError(e)) {
-          // Keep the unsaved snapshot; the user decides reload vs overwrite.
+          // Another device wrote in between: keep the unsaved snapshot and
+          // fold both sides together instead of asking or clobbering.
           pendingRef.current = pendingRef.current ?? snapshot;
-          conflictRef.current = true;
-          setFileConflict(true);
+          void mergeFromDiskRef.current();
         } else {
           console.error("Failed to save budget:", e);
         }
@@ -211,14 +219,78 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fileMtimeRef.current = mtimeMs;
     formatsRef.current = data.savedFormats;
     sourcesRef.current = data.importSources;
+    baseRef.current = data;
     pendingRef.current = null;
     backedUpRef.current = false;
     conflictRef.current = false;
+    skipPersistRef.current = true; // this state IS the file; nothing to save back
     setFileConflict(false);
     setFilePath(path);
     setLoadError(null);
     setNeedsSetup(false);
     dispatch({ type: "set", budget: data.loaded });
+  };
+
+  /**
+   * The file changed while we hold local edits: three-way merge instead of a
+   * dialog. base = last synced state, ours = memory, theirs = disk. Ours wins
+   * genuine ties (same record edited on both sides); a toast reports the rest.
+   * Falls back to the conflict banner only when merging itself fails.
+   */
+  const mergeFromDiskRef = useRef<() => Promise<void>>(async () => {});
+  mergeFromDiskRef.current = async () => {
+    const path = filePathRef.current;
+    const b = budgetRef.current;
+    if (!path || !b || conflictRef.current) return;
+    try {
+      const { contents, mtimeMs } = await readBudgetFile(path);
+      const theirs = parseBudgetFile(contents);
+      const ours: BudgetFileData = { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+      const base = baseRef.current ?? theirs; // no base (shouldn't happen): treat the file as base
+      const { merged, report } = mergeBudgetFiles(base, ours, theirs);
+
+      if (!reportTookFromFile(report) && report.tiesKeptLocal === 0) {
+        // The file's changes are already part of our state (e.g. our own write
+        // raced the watcher, or only savedAt differs): just resync the clock
+        // and let any pending edits save normally.
+        fileMtimeRef.current = mtimeMs;
+        baseRef.current = theirs;
+        return;
+      }
+
+      formatsRef.current = merged.savedFormats;
+      sourcesRef.current = merged.importSources;
+      pendingRef.current = null;
+      skipPersistRef.current = true; // we persist the merge explicitly below
+      dispatch({ type: "set", budget: merged.loaded });
+
+      const text = serializeBudgetFile(merged, new Date().toISOString());
+      fileMtimeRef.current = await writeBudgetFile(path, text, mtimeMs);
+      baseRef.current = merged;
+
+      const parts: string[] = [];
+      if (report.addedFromFile) parts.push(`${report.addedFromFile} added`);
+      if (report.updatedFromFile) parts.push(`${report.updatedFromFile} updated`);
+      if (report.deletedFromFile) parts.push(`${report.deletedFromFile} removed`);
+      if (report.dedupedImports) parts.push(`${report.dedupedImports} duplicate import${report.dedupedImports === 1 ? "" : "s"} dropped`);
+      const ties = report.tiesKeptLocal
+        ? `${parts.length > 0 ? " · " : ""}${report.tiesKeptLocal} conflicting edit${report.tiesKeptLocal === 1 ? "" : "s"} kept from this computer`
+        : "";
+      notifications.show({
+        title: "Merged changes from another computer",
+        message: `${parts.join(", ")}${ties}`,
+        color: "blue",
+      });
+    } catch (e) {
+      if (isConflictError(e)) {
+        // The file moved again between our read and write — go around once more.
+        setTimeout(() => void mergeFromDiskRef.current(), 500);
+        return;
+      }
+      console.error("Automatic merge failed:", e);
+      conflictRef.current = true;
+      setFileConflict(true);
+    }
   };
 
   /** Write `loaded` to a fresh default-location file and follow it. */
@@ -238,6 +310,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     filePathRef.current = path;
     fileMtimeRef.current = mtime;
     backedUpRef.current = true; // just written; nothing older to preserve
+    baseRef.current = { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+    skipPersistRef.current = true;
     setFilePath(path);
     setNeedsSetup(false);
     dispatch({ type: "set", budget: loaded });
@@ -304,17 +378,70 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Persist changes (debounced, serialized). Skips the initial hydration.
+  // Persist changes (debounced, serialized). Skips the initial hydration and
+  // dispatches that merely mirror what's already on disk (adopt/merge) — saving
+  // those back would bump the file's mtime and ping-pong between two open apps.
   useEffect(() => {
     if (!budget || !filePathRef.current) return;
+    const skip = skipPersistRef.current;
+    skipPersistRef.current = false;
     if (!hydratedRef.current) {
       hydratedRef.current = true;
       return;
     }
+    if (skip) return;
     pendingRef.current = budget;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => void flushPendingRef.current(), 500);
   }, [budget]);
+
+  // Watch the file for changes made by ANOTHER computer (or its sync agent).
+  // Poll + check on refocus; an idle app simply follows along, an app holding
+  // unsaved edits merges. Checks ride the save chain so they never race a
+  // write of our own.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let stopped = false;
+    const check = () => {
+      if (stopped || !filePathRef.current || conflictRef.current) return;
+      saveChainRef.current = saveChainRef.current.then(async () => {
+        if (stopped || conflictRef.current) return;
+        const path = filePathRef.current;
+        const known = fileMtimeRef.current;
+        if (!path || known === undefined) return;
+        try {
+          const mtime = await statBudgetFile(path);
+          if (mtime === null || Math.abs(mtime - known) <= 2) return;
+          const idle = pendingRef.current === null && timerRef.current === null;
+          if (idle) {
+            const { contents, mtimeMs } = await readBudgetFile(path);
+            adoptRef.current(path, contents, mtimeMs);
+            notifications.show({
+              title: "Updated from the synced file",
+              message: "Another computer saved changes; this window refreshed.",
+              color: "blue",
+            });
+          } else {
+            await mergeFromDiskRef.current();
+          }
+        } catch (e) {
+          console.error("Sync check failed:", e);
+        }
+      });
+    };
+    const interval = setInterval(check, 15_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", check);
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", check);
+    };
+  }, []);
 
   // Never lose the debounce window's edits: flush before the window closes,
   // and opportunistically when it goes to the background.
@@ -418,16 +545,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const b = budgetRef.current;
         const repo = repoRef.current;
         if (!b || !repo) throw new Error("No budget loaded");
-        const text = serializeBudgetFile(
-          { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current },
-          new Date().toISOString(),
-        );
+        const data: BudgetFileData = { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+        const text = serializeBudgetFile(data, new Date().toISOString());
         const mtime = await writeBudgetFile(newPath, text); // save dialog already confirmed any overwrite
         const app = await repo.loadApp();
         await repo.saveApp({ ...app, budgetFilePath: newPath });
         filePathRef.current = newPath;
         fileMtimeRef.current = mtime;
         backedUpRef.current = true;
+        baseRef.current = data;
         conflictRef.current = false;
         setFileConflict(false);
         setFilePath(newPath);
@@ -559,12 +685,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         {fileConflict && (
           <Alert
             color="orange"
-            title="The budget file changed outside this app"
+            title="Couldn't merge the budget file automatically"
             style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 1000, maxWidth: 560, boxShadow: "var(--mantine-shadow-md)" }}
           >
             <Text size="sm">
-              Another device (or a sync service) wrote to the file since this app last saved. Saving is
-              paused so nothing gets clobbered.
+              The file changed outside this app and the automatic merge failed (it may be unreadable or
+              from a newer app version). Saving is paused so nothing gets clobbered.
             </Text>
             <Group mt="sm" gap="xs">
               <Button size="xs" color="orange" variant="light" onClick={() => void resolveConflictRef.current("reload")}>
