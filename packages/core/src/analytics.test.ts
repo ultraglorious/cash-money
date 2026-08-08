@@ -46,8 +46,8 @@ const txs: Transaction[] = [
     ],
   }),
   // Card payment: transfer pair, must cancel out of category math.
-  f.txn({ id: f.tid("T4"), accountId: CHK, date: "2026-02-10", amount: -10000 as Cents, payee: "Transfer : Card", transfer: { counterAccountId: CARD, pairId: f.tid("P1") } }),
-  f.txn({ id: f.tid("T5"), accountId: CARD, date: "2026-02-10", amount: 10000 as Cents, payee: "Transfer : Checking", transfer: { counterAccountId: CHK, pairId: f.tid("P1") } }),
+  f.txn({ id: f.tid("T4"), accountId: CHK, date: "2026-02-10", amount: -10000 as Cents, payee: "Transfer : Card", categoryId: undefined, transfer: { counterAccountId: CARD, pairId: f.tid("P1") } }),
+  f.txn({ id: f.tid("T5"), accountId: CARD, date: "2026-02-10", amount: 10000 as Cents, payee: "Transfer : Checking", categoryId: undefined, transfer: { counterAccountId: CHK, pairId: f.tid("P1") } }),
   // March spending + an off-budget tracking deposit + a scheduled (ignored) row.
   f.txn({ id: f.tid("T6"), accountId: CHK, date: "2026-03-05", amount: -5000 as Cents, categoryId: DIN, payee: "Cafe" }),
   f.txn({ id: f.tid("T7"), accountId: TRK, date: "2026-03-06", amount: 50000 as Cents, payee: "Deposit" }),
@@ -153,6 +153,36 @@ describe("householdTransferIds (global perspective)", () => {
 
     const insidePersonal = flows(b, "section", { from: "2026-06", to: "2026-07", accountId: CHK });
     expect(insidePersonal.find((n) => n.key === GEVD)!.amount).toBe(-200000); // real outflow from HERE
+  });
+});
+
+describe("categorized transfer legs (cross-household funding as real transfers)", () => {
+  const JNT2 = f.tid("AJN2");
+  const pair = f.tid("PRX1");
+  function withPair(): LoadedBudget {
+    const b = base([]);
+    b.accounts = [
+      f.account({ id: CHK, name: "Checking", type: "checking", onBudget: true, household: "Personal" }),
+      f.account({ id: JNT2, name: "Joint", type: "checking", onBudget: true, household: "Joint" }),
+    ];
+    b.transactions = [
+      f.txn({ id: f.tid("XO"), accountId: CHK, date: "2026-06-28", amount: -200000 as Cents, categoryId: GRO, payee: "Transfer to: Joint", transfer: { counterAccountId: JNT2, pairId: pair } }),
+      f.txn({ id: f.tid("XI"), accountId: JNT2, date: "2026-06-28", amount: 200000 as Cents, payee: "Transfer from: Checking", categoryId: undefined, transfer: { counterAccountId: CHK, pairId: pair } }),
+    ];
+    return b;
+  }
+  const range = { from: "2026-06", to: "2026-06" };
+
+  it("stays out of global views but files under its envelope inside the account", () => {
+    const b = withPair();
+    expect(flows(b, "section", range)).toEqual([]); // globally the pair cancels
+    expect(monthlyCashflow(b)).toEqual([]); // no fabricated spending or income
+    const inside = flows(b, "section", { ...range, accountId: CHK });
+    expect(inside).toEqual([{ key: GEVD, label: "Everyday", amount: -200000 }]);
+    const tree = detailTree(b, "2026-06", "2026-06");
+    const chk = tree.find((n) => n.key === CHK)!;
+    expect(chk.children![0]).toMatchObject({ key: GEVD, total: -200000 });
+    expect(tree.find((n) => n.key === JNT2)!.children![0]!.key).toBe(TRANSFERS);
   });
 });
 

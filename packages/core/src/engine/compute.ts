@@ -158,8 +158,15 @@ function gatherTransactions(
     if (!onCard) bump(cashDeltaByHh, hh.hhOfAccount(t.accountId), m, t.amount);
 
     if (t.transfer) {
-      if (onCard) bump(cardTransfer, t.accountId, m, t.amount); // a payment into the card
-      continue;
+      if (onCard) {
+        bump(cardTransfer, t.accountId, m, t.amount); // a payment into the card
+        continue;
+      }
+      // A CROSS-HOUSEHOLD transfer's outflow leg may carry a category: the
+      // sender funds it from an envelope (activity below keeps the sender's
+      // Ready-to-Assign whole), while the receiving household's RTA rises
+      // through the cash pool above — no category needed on that side.
+      // Same-pool transfers stay uncategorized and fall out as no-ops.
     }
 
     const lines = t.splits ?? [{ categoryId: t.categoryId, amount: t.amount }];

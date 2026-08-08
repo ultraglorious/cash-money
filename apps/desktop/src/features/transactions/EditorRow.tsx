@@ -63,7 +63,7 @@ export function EditorRow({
   payees: string[];
   lastCategoryOf: (payee: string) => Ulid | undefined;
   categoryData: GroupedOption[];
-  accountData: { value: string; label: string }[];
+  accountData: { value: string; label: string; household?: string; onBudget?: boolean }[];
   onSubmit: (data: EditorSubmit) => void;
   onCancel: () => void;
 }) {
@@ -88,6 +88,17 @@ export function EditorRow({
     accountData.filter((a) => a.value !== accountId).map((a) => [`${TRANSFER_PREFIX}${a.label}`, a.value]),
   );
   const nameOfAccount = (id: string | null) => accountData.find((a) => a.value === id)?.label ?? "—";
+  // A transfer BETWEEN households: the receiving household's Ready-to-Assign
+  // rises on its own; the sending side should be funded from an envelope, so
+  // the category picker stays available for the outflow leg.
+  const accOf = (id: string | null) => accountData.find((a) => a.value === id);
+  const crossHousehold =
+    !!transferTo &&
+    (accOf(accountId)?.onBudget ?? true) &&
+    (accOf(transferTo)?.onBudget ?? true) &&
+    !!accOf(accountId)?.household &&
+    !!accOf(transferTo)?.household &&
+    accOf(accountId)!.household !== accOf(transferTo)!.household;
 
   const signedMagnitude = (): Cents => {
     const cents = Math.round(Number(magnitude || 0) * 100);
@@ -104,7 +115,13 @@ export function EditorRow({
         ? undefined
         : { freq: repeat as RecurrenceFreq, anchorDay: Number(iso.slice(8, 10)) };
     const base = { accountId: accountId as Ulid, date: iso, payee: payee.trim(), memo: memo.trim(), cleared: initial?.cleared ?? "cleared", recurrence };
-    if (transferTo) onSubmit({ ...base, amount: signedMagnitude(), transferAccountId: transferTo as Ulid });
+    if (transferTo)
+      onSubmit({
+        ...base,
+        amount: signedMagnitude(),
+        transferAccountId: transferTo as Ulid,
+        ...(crossHousehold && categoryId ? { categoryId: categoryId as Ulid } : {}),
+      });
     else if (splits) onSubmit({ ...base, amount: splitTotal, splits });
     else onSubmit({ ...base, amount: signedMagnitude(), ...(categoryId ? { categoryId: categoryId as Ulid } : {}) });
   };
@@ -153,7 +170,21 @@ export function EditorRow({
       />
       {transferTo ? (
         <Group gap={4} wrap="nowrap">
-          <Badge color="blue" variant="light">Transfer: {nameOfAccount(transferTo)}</Badge>
+          {crossHousehold ? (
+            <Select
+              size="xs"
+              placeholder="Fund from envelope…"
+              data={categoryData}
+              value={categoryId}
+              onChange={(v) => setCategoryId(v)}
+              searchable
+              clearable
+              comboboxProps={{ withinPortal: true }}
+              style={{ flex: 1 }}
+            />
+          ) : (
+            <Badge color="blue" variant="light">Transfer: {nameOfAccount(transferTo)}</Badge>
+          )}
           {!initial?.transfer && (
             <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => { setTransferTo(null); setPayee(""); }} aria-label="Clear transfer">
               <IconX size={13} />

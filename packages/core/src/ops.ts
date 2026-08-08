@@ -324,6 +324,12 @@ export interface TransferArgs {
   approved: boolean;
   clearedThis: ClearedStatus;
   clearedCounter: ClearedStatus;
+  /**
+   * Envelope funding the OUTFLOW leg — for cross-household transfers, where
+   * the sender spends from an envelope while the receiver's Ready-to-Assign
+   * rises through the cash pool. Same-pool transfers leave this unset.
+   */
+  categoryId?: Ulid;
 }
 
 /** Record money moving between two accounts: both legs, linked by a pair id. */
@@ -338,6 +344,7 @@ export function addTransfer(b: LoadedBudget, args: TransferArgs): LoadedBudget {
     payee: transferPayee(args.amount, nameOf(args.counterAccountId)),
     amount: args.amount,
     cleared: args.clearedThis,
+    ...(args.categoryId && args.amount < 0 ? { categoryId: args.categoryId } : {}),
     transfer: { counterAccountId: args.counterAccountId, pairId },
   };
   const legB: Transaction = {
@@ -347,6 +354,7 @@ export function addTransfer(b: LoadedBudget, args: TransferArgs): LoadedBudget {
     payee: transferPayee(-args.amount, nameOf(args.accountId)),
     amount: -args.amount as Cents,
     cleared: args.clearedCounter,
+    ...(args.categoryId && args.amount > 0 ? { categoryId: args.categoryId } : {}),
     transfer: { counterAccountId: args.accountId, pairId },
   };
   return addTransactions(b, [legA, legB]);
@@ -361,7 +369,7 @@ export function addTransfer(b: LoadedBudget, args: TransferArgs): LoadedBudget {
 export function updateTransfer(
   b: LoadedBudget,
   txId: Ulid,
-  patch: { accountId?: Ulid; counterAccountId?: Ulid; date?: ISODate; amount?: Cents; memo?: string; cleared?: ClearedStatus },
+  patch: { accountId?: Ulid; counterAccountId?: Ulid; date?: ISODate; amount?: Cents; memo?: string; cleared?: ClearedStatus; categoryId?: Ulid },
 ): LoadedBudget {
   const t = b.transactions.find((x) => x.id === txId);
   if (!t?.transfer) return b;
@@ -373,6 +381,9 @@ export function updateTransfer(
   const date = patch.date ?? t.date;
   const amount = patch.amount ?? t.amount;
   const memo = patch.memo ?? t.memo;
+  // The funding envelope lives on whichever leg the money LEAVES.
+  const other = otherId ? b.transactions.find((x) => x.id === otherId) : undefined;
+  const categoryId = "categoryId" in patch ? patch.categoryId : t.categoryId ?? other?.categoryId;
 
   const transactions = b.transactions.map((x) => {
     if (x.id === txId) {
@@ -385,6 +396,7 @@ export function updateTransfer(
         memo,
         payee: transferPayee(amount, nameOf(counterAccountId)),
         cleared: patch.cleared ?? x.cleared,
+        categoryId: amount < 0 ? categoryId : undefined,
         transfer: { ...x.transfer!, counterAccountId },
       };
     }
@@ -397,6 +409,7 @@ export function updateTransfer(
         amount: -amount as Cents,
         memo,
         payee: transferPayee(-amount, nameOf(accountId)),
+        categoryId: -amount < 0 ? categoryId : undefined,
         transfer: { ...x.transfer!, counterAccountId: accountId },
       };
     }

@@ -228,9 +228,13 @@ export function flows(b: LoadedBudget, by: FlowDimension, f: FlowFilter): FlowNo
     if (!f.accountId && !onBudget.has(t.accountId)) continue;
     if (t.transfer) {
       // Transfers only surface when drilling INSIDE one account, where they
-      // genuinely move that account's balance.
-      if (f.accountId && by === "section" && !f.groupId) add(TRANSFERS, "(transfers)", t.amount);
-      continue;
+      // genuinely move that account's balance. A categorized outflow leg
+      // (cross-household funding) falls through to its envelope instead.
+      if (!t.categoryId) {
+        if (f.accountId && by === "section" && !f.groupId) add(TRANSFERS, "(transfers)", t.amount);
+        continue;
+      }
+      if (!f.accountId) continue; // globally the pair cancels either way
     }
     for (const line of linesOf(t)) {
       const groupId = line.categoryId ? groupOf.get(line.categoryId) : undefined;
@@ -293,15 +297,18 @@ export function detailTree(b: LoadedBudget, from: MonthKey, to: MonthKey): Detai
     if (compareMonth(m, from) < 0 || compareMonth(m, to) > 0) continue;
 
     for (const line of linesOf(t)) {
-      const groupId = !t.transfer && line.categoryId ? groupOf.get(line.categoryId) : undefined;
+      // A categorized transfer leg (cross-household funding) files under its
+      // envelope; only bare transfer legs land in "(transfers)".
+      const bareTransfer = !!t.transfer && !line.categoryId;
+      const groupId = !bareTransfer && line.categoryId ? groupOf.get(line.categoryId) : undefined;
       const path: Array<[string, string]> = [
         [t.accountId, accName.get(t.accountId) ?? "—"],
-        t.transfer
+        bareTransfer
           ? [TRANSFERS, "(transfers)"]
           : groupId
             ? [groupId, groupName.get(groupId) ?? "—"]
             : [UNCATEGORIZED, "(uncategorized)"],
-        t.transfer
+        bareTransfer
           ? [TRANSFERS, "(transfers)"]
           : line.categoryId
             ? [line.categoryId, catName.get(line.categoryId) ?? "—"]

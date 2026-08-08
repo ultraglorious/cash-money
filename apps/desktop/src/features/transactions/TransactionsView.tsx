@@ -64,7 +64,7 @@ export function TransactionsView() {
   }, [budget]);
 
   const categoryData = categoryOptions(budget);
-  const accountData = budget.accounts.map((a) => ({ value: a.id, label: a.name }));
+  const accountData = budget.accounts.map((a) => ({ value: a.id, label: a.name, household: a.household, onBudget: a.onBudget }));
 
   const cycleSort = (col: string) => setSort((s) => (s?.col !== col ? { col, dir: "asc" } : s.dir === "asc" ? { col, dir: "desc" } : null));
   const sortValue = (t: Transaction, col: string): string | number => {
@@ -185,6 +185,7 @@ export function TransactionsView() {
         approved,
         clearedThis: legCleared(data.accountId),
         clearedCounter: legCleared(data.transferAccountId),
+        categoryId: data.categoryId,
       });
       setAdding(false);
       return;
@@ -221,6 +222,7 @@ export function TransactionsView() {
         amount: data.amount,
         memo: data.memo,
         cleared: data.cleared,
+        categoryId: data.categoryId,
       });
       setEditingId(null);
       return;

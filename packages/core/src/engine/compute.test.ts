@@ -49,6 +49,45 @@ function creditCardScenario(): LoadedBudget {
   };
 }
 
+describe("cross-household transfers with a funded outflow leg", () => {
+  const personal = f.account({ id: f.tid("APER"), name: "Personal", type: "checking", household: "Personal" });
+  const joint = f.account({ id: f.tid("AJNT"), name: "Joint", type: "checking", household: "Joint" });
+  const incomeGrp = f.group({ id: f.tid("GIN2"), name: "Inflow", kind: "income", sortOrder: 0 });
+  const evGrp = f.group({ id: f.tid("GEV2"), name: "Everyday", kind: "normal", sortOrder: 1, household: "Personal" });
+  const rta = f.category({ id: f.tid("CRT2"), groupId: incomeGrp.id, name: "Ready to Assign" });
+  const contrib = f.category({ id: f.tid("CCO2"), groupId: evGrp.id, name: "Joint contribution" });
+  const pairId = f.tid("PAIR9");
+
+  const b: LoadedBudget = {
+    budget: f.budget(),
+    accounts: [personal, joint],
+    groups: [incomeGrp, evGrp],
+    categories: [rta, contrib],
+    assignments: [f.assignment({ id: f.tid("AS9"), month: "2026-06", categoryId: contrib.id, assigned: 200000 as Cents })],
+    transactions: [
+      f.txn({ id: f.tid("TI9"), accountId: personal.id, date: "2026-06-01", amount: 500000 as Cents, categoryId: rta.id, payee: "Employer" }),
+      // The contribution: a REAL transfer whose outflow leg spends from the envelope.
+      f.txn({ id: f.tid("TO9"), accountId: personal.id, date: "2026-06-28", amount: -200000 as Cents, categoryId: contrib.id, payee: "Transfer to: Joint", transfer: { counterAccountId: joint.id, pairId } }),
+      f.txn({ id: f.tid("TR9"), accountId: joint.id, date: "2026-06-28", amount: 200000 as Cents, payee: "Transfer from: Personal", categoryId: undefined, transfer: { counterAccountId: personal.id, pairId } }),
+    ],
+  };
+  const p = computeProjection(b);
+
+  it("spends from the sender's envelope, so the sender's RTA stays whole", () => {
+    expect(p.activityOf(f.tid("CCO2"), "2026-06")).toBe(-200000);
+    expect(p.availableOf(f.tid("CCO2"), "2026-06")).toBe(0); // 2000 assigned, 2000 spent
+    const byHh = p.readyToAssignByHousehold("2026-06");
+    // Personal: 5000 in − 2000 assigned to the envelope = 3000 assignable.
+    expect(byHh.get("Personal")).toBe(300000);
+  });
+
+  it("raises the receiving household's RTA like income, with no category needed", () => {
+    const byHh = p.readyToAssignByHousehold("2026-06");
+    expect(byHh.get("Joint")).toBe(200000);
+    expect(p.readyToAssignOf("2026-06")).toBe(500000); // households sum cleanly
+  });
+});
+
 describe("credit-card auto-move", () => {
   const b = creditCardScenario();
   const p = computeProjection(b);

@@ -282,6 +282,26 @@ describe("transaction ops", () => {
     expect(c2).toMatchObject({ amount: 30000, date: "2026-01-21", memo: "more", cleared: "uncleared" });
   });
 
+  it("a cross-household transfer carries its funding envelope on the outflow leg only", () => {
+    const SAV = f.tid("ASAV");
+    const withSavings = { ...base(), accounts: [...base().accounts, f.account({ id: SAV, name: "Savings", type: "checking" })] };
+    let b = ops.addTransfer(withSavings, {
+      accountId: CHK, counterAccountId: SAV, date: "2026-01-20", amount: -25000 as Cents,
+      memo: "", approved: true, clearedThis: "cleared", clearedCounter: "uncleared", categoryId: DIN,
+    });
+    const out = b.transactions.find((t) => t.transfer && t.amount < 0)!;
+    const inn = b.transactions.find((t) => t.transfer && t.amount > 0)!;
+    expect(out.categoryId).toBe(DIN);
+    expect(inn.categoryId).toBeUndefined();
+    // Editing the amount keeps the envelope on the outflow leg.
+    b = ops.updateTransfer(b, inn.id, { amount: 30000 as Cents });
+    expect(b.transactions.find((t) => t.id === out.id)!.categoryId).toBe(DIN);
+    expect(b.transactions.find((t) => t.id === inn.id)!.categoryId).toBeUndefined();
+    // Explicitly clearing it clears it.
+    b = ops.updateTransfer(b, out.id, { categoryId: undefined });
+    expect(b.transactions.find((t) => t.id === out.id)!.categoryId).toBeUndefined();
+  });
+
   it("normalizeTransferPayees rewrites imported transfer payees, idempotently, leaving the rest alone", () => {
     const SAV = f.tid("ASAV");
     const pair = f.tid("PN1");
