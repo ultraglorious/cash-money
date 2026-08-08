@@ -18,7 +18,7 @@ import {
 } from "@tabler/icons-react";
 import { newId, ops, type Cents, type Transaction, type Ulid } from "@cash-money/core";
 import { useApp } from "../../state";
-import { categoryOptions } from "../../categoryOptions";
+import { categoryOptions, incomeCategoryOptions } from "../../categoryOptions";
 import { money } from "../../format";
 import { amountColor } from "../../theme";
 import { EditorRow, type EditorSubmit } from "./EditorRow";
@@ -40,6 +40,7 @@ export function TransactionsView() {
   const [schedOpen, setSchedOpen] = useState(true);
   const [payeesOpen, setPayeesOpen] = useState(false);
   const [selected, setSelected] = useState<Set<Ulid>>(new Set());
+  const [onlyUncategorized, setOnlyUncategorized] = useState(false);
 
   const single = view.kind === "account" ? (view.accountId as Ulid) : null;
   const activeAccount = single ?? (account as Ulid | null);
@@ -51,6 +52,25 @@ export function TransactionsView() {
     if (t.transfer) return t.categoryId ? categoryName(t.categoryId) : `Transfer: ${accountName(t.transfer.counterAccountId)}`;
     if (t.splits) return `Split (${t.splits.length})`;
     return categoryName(t.categoryId);
+  };
+
+  /**
+   * An outflow with no envelope comes straight out of Ready-to-Assign. That is
+   * a legitimate thing to do — but it has to be a decision, so flag the rows
+   * that never made one. Pocket shuffles within one budget scope are exempt:
+   * they move nothing out of the pool. Picking "Ready to Assign" in the editor
+   * clears the flag while draining exactly the same.
+   */
+  const budgetScopeOf = (id: Ulid): string => {
+    const a = budget.accounts.find((x) => x.id === id);
+    if (!a) return "__unknown__";
+    return a.onBudget === false ? "__no-budget__" : a.household ?? "__no-household__";
+  };
+  const needsCategory = (t: Transaction): boolean => {
+    if (t.amount >= 0 || t.categoryId || t.splits) return false;
+    if (!budget.accounts.find((a) => a.id === t.accountId)?.onBudget) return false;
+    if (t.transfer && budgetScopeOf(t.accountId) === budgetScopeOf(t.transfer.counterAccountId)) return false;
+    return true;
   };
 
   const payees = useMemo(
@@ -66,6 +86,7 @@ export function TransactionsView() {
   }, [budget]);
 
   const categoryData = categoryOptions(budget);
+  const incomeData = incomeCategoryOptions(budget);
   const accountData = budget.accounts.map((a) => ({ value: a.id, label: a.name, household: a.household, onBudget: a.onBudget }));
 
   const cycleSort = (col: string) => setSort((s) => (s?.col !== col ? { col, dir: "asc" } : s.dir === "asc" ? { col, dir: "desc" } : null));
@@ -86,6 +107,7 @@ export function TransactionsView() {
     const q = query.trim().toLowerCase();
     return budget.transactions
       .filter((t) => (activeAccount ? t.accountId === activeAccount : true))
+      .filter((t) => !onlyUncategorized || needsCategory(t))
       .filter((t) => {
         if (!q) return true;
         const hay = [t.payee, t.memo, categoryLabel(t), ...(t.splits?.map((s) => s.memo) ?? [])].join(" ").toLowerCase();
@@ -99,7 +121,7 @@ export function TransactionsView() {
         return sort.dir === "asc" ? cmp : -cmp;
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [budget, query, activeAccount, sort]);
+  }, [budget, query, activeAccount, sort, onlyUncategorized]);
 
   // Scheduled (unapproved) transactions are pending: they don't hit the budget
   // until approved. Surface them separately, soonest first, above the register.
@@ -123,6 +145,13 @@ export function TransactionsView() {
             .reduce((s, t) => s + t.amount, 0)
         : null,
     [budget, single],
+  );
+
+  // Rows that would silently drain Ready-to-Assign, counted for the header pill.
+  const uncategorizedCount = useMemo(
+    () => budget.transactions.filter((t) => (activeAccount ? t.accountId === activeAccount : true) && needsCategory(t)).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [budget, activeAccount],
   );
 
   // ---- Multi-select ----------------------------------------------------------
@@ -259,6 +288,18 @@ export function TransactionsView() {
               <Text size="xs" c="dimmed">cleared {money(clearedBalance, currency)}</Text>
             </Tooltip>
           )}
+          {uncategorizedCount > 0 && (
+            <Tooltip label={`${uncategorizedCount} outflow${uncategorizedCount === 1 ? "" : "s"} with no envelope — they come straight out of Ready to Assign. Click to see just those.`} withArrow>
+              <Badge
+                color="yellow"
+                variant={onlyUncategorized ? "filled" : "light"}
+                style={{ cursor: "pointer" }}
+                onClick={() => setOnlyUncategorized((v) => !v)}
+              >
+                {uncategorizedCount} need{uncategorizedCount === 1 ? "s" : ""} a category
+              </Badge>
+            </Tooltip>
+          )}
           {reconciledThrough && (
             <Tooltip label="A bank statement confirmed this account's transactions up to this date." withArrow>
               <Text size="xs" c="dimmed">✓ reconciled through {reconciledThrough}</Text>
@@ -324,7 +365,7 @@ export function TransactionsView() {
               const due = t.date <= todayIso();
               if (editingId === t.id && !t.splits) {
                 return (
-                  <EditorRow key={t.id} single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
+                  <EditorRow key={t.id} single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} incomeData={incomeData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
                 );
               }
               return (
@@ -347,7 +388,7 @@ export function TransactionsView() {
                     onClick={(e) => { e.stopPropagation(); rowSelect(scheduled, t.id, e); }}
                     aria-label="Select row"
                   />
-                  <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
+                  <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} needsCategory={needsCategory(t)} currency={currency} />
                   <Group gap={4} wrap="nowrap">
                     <StatusBadge t={t} onApprove={() => approveTransaction(t.id)} onSetCleared={(c) => updateTransaction(t.id, { cleared: c })} />
                     {t.recurrence && (
@@ -397,7 +438,7 @@ export function TransactionsView() {
       </Box>
 
       {adding && (
-        <EditorRow single={single} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} accountData={accountData} onSubmit={addFromEditor} onCancel={() => setAdding(false)} />
+        <EditorRow single={single} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} incomeData={incomeData} accountData={accountData} onSubmit={addFromEditor} onCancel={() => setAdding(false)} />
       )}
 
       <div ref={parentRef} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
@@ -408,7 +449,7 @@ export function TransactionsView() {
             return (
               <div key={t.id} ref={virt.measureElement} data-index={vi.index} style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vi.start}px)` }}>
                 {editing ? (
-                  <EditorRow single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
+                  <EditorRow single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} incomeData={incomeData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
                 ) : (
                   <Box
                     onDoubleClick={() => !t.splits && setEditingId(t.id)}
@@ -423,7 +464,7 @@ export function TransactionsView() {
                       onClick={(e) => { e.stopPropagation(); rowSelect(approved, t.id, e); }}
                       aria-label="Select row"
                     />
-                    <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
+                    <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} needsCategory={needsCategory(t)} currency={currency} />
                     <Group gap={4} wrap="nowrap">
                       <StatusBadge t={t} onApprove={() => approveTransaction(t.id)} onSetCleared={(c) => updateTransaction(t.id, { cleared: c })} />
                       {t.recurrence && (
@@ -509,11 +550,12 @@ function StatusBadge({ t, onApprove, onSetCleared }: {
 }
 
 /** The shared read-only cells of one register row (scheduled and approved lists). */
-function TxCells({ t, single, accountName, categoryLabel, currency }: {
+function TxCells({ t, single, accountName, categoryLabel, needsCategory, currency }: {
   t: Transaction;
   single: Ulid | null;
   accountName: (id: Ulid) => string;
   categoryLabel: (t: Transaction) => string;
+  needsCategory: boolean;
   currency: ReturnType<typeof useApp>["currency"];
 }) {
   return (
@@ -521,7 +563,13 @@ function TxCells({ t, single, accountName, categoryLabel, currency }: {
       <Text size="sm">{t.date}</Text>
       {!single && <Text size="sm" lineClamp={1}>{accountName(t.accountId)}</Text>}
       <Text size="sm" lineClamp={1}>{t.payee}</Text>
-      <Text size="sm" lineClamp={1} c={t.transfer ? "blue" : t.splits ? "grape" : undefined}>{categoryLabel(t)}</Text>
+      {needsCategory ? (
+        <Tooltip label="No envelope — this comes straight out of Ready to Assign. Edit the row and choose one, or pick Ready to Assign to say you meant it." withArrow>
+          <Badge size="xs" color="yellow" variant="light" style={{ width: "fit-content" }}>needs a category</Badge>
+        </Tooltip>
+      ) : (
+        <Text size="sm" lineClamp={1} c={t.transfer ? "blue" : t.splits ? "grape" : undefined}>{categoryLabel(t)}</Text>
+      )}
       <Text size="sm" c="dimmed" lineClamp={1}>{t.memo}</Text>
       <Text size="sm" fw={500} ta="right" c={amountColor(t.amount)}>{money(t.amount, currency)}</Text>
     </>

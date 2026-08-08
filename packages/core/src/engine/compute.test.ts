@@ -111,6 +111,25 @@ describe("transfers that leave a budget scope carry a funded outflow leg", () =>
     const bal = p2.accountBalances();
     expect(bal.get(f.tid("ABRK"))).toBe(100000);
   });
+
+  it("lets Ready to Assign itself be the funding choice — same math as blank, but chosen", () => {
+    const broker = f.account({ id: f.tid("ABR3"), name: "Broker", type: "tracking", onBudget: false, household: "Personal" });
+    const pair3 = f.tid("PAIRB");
+    const legs = (categoryId?: typeof rta.id) => [
+      f.txn({ id: f.tid("TC1"), accountId: personal.id, date: "2026-06-20", amount: -100000 as Cents, categoryId, payee: "Transfer to: Broker", transfer: { counterAccountId: broker.id, pairId: pair3 } }),
+      f.txn({ id: f.tid("TC2"), accountId: broker.id, date: "2026-06-20", amount: 100000 as Cents, categoryId: undefined, payee: "Transfer from: Personal", transfer: { counterAccountId: personal.id, pairId: pair3 } }),
+    ];
+    const project = (categoryId?: typeof rta.id) =>
+      computeProjection({ ...b, accounts: [...b.accounts, broker], transactions: [...b.transactions, ...legs(categoryId)] });
+    const chosen = project(rta.id);
+    const blank = project(undefined);
+
+    // Unassigned money funds it either way — the difference is only that one of
+    // them is a recorded decision. No envelope moves in either case.
+    expect(chosen.readyToAssignByHousehold("2026-06").get("Personal")).toBe(200000);
+    expect(blank.readyToAssignByHousehold("2026-06").get("Personal")).toBe(200000);
+    expect(chosen.activityOf(f.tid("CCO2"), "2026-06")).toBe(-200000); // the contribution envelope, untouched by this row
+  });
 });
 
 describe("credit-card auto-move", () => {

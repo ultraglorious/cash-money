@@ -54,6 +54,7 @@ export function EditorRow({
   payees,
   lastCategoryOf,
   categoryData,
+  incomeData,
   accountData,
   onSubmit,
   onCancel,
@@ -63,6 +64,7 @@ export function EditorRow({
   payees: string[];
   lastCategoryOf: (payee: string) => Ulid | undefined;
   categoryData: GroupedOption[];
+  incomeData: { value: string; label: string; household?: string }[];
   accountData: { value: string; label: string; household?: string; onBudget?: boolean }[];
   onSubmit: (data: EditorSubmit) => void;
   onCancel: () => void;
@@ -109,6 +111,15 @@ export function EditorRow({
     accOf(transferTo)?.onBudget === false
       ? `Leaves the budget for ${nameOfAccount(transferTo)} — still yours, but no longer spendable, so it spends an envelope.`
       : `Leaves this budget for ${accOf(transferTo)?.household ?? nameOfAccount(transferTo)} — spends an envelope here, lands as money to assign there.`;
+
+  // Unbudgeted money is a legitimate source: income on the way in, and on the
+  // way out a deliberate Ready-to-Assign drain. It has to be *picked* — leaving
+  // the category blank must never be the way money silently leaves the pool.
+  const household = accOf(accountId)?.household;
+  const unbudgeted = incomeData.filter((c) => c.household === household).map(({ value, label }) => ({ value, label }));
+  const pickerData: GroupedOption[] = unbudgeted.length
+    ? [{ group: "Unbudgeted money", items: unbudgeted }, ...categoryData]
+    : categoryData;
 
   const signedMagnitude = (): Cents => {
     const cents = Math.round(Number(magnitude || 0) * 100);
@@ -185,7 +196,7 @@ export function EditorRow({
               <Select
                 size="xs"
                 placeholder="Category"
-                data={categoryData}
+                data={pickerData}
                 value={categoryId}
                 onChange={(v) => setCategoryId(v)}
                 searchable
@@ -214,7 +225,7 @@ export function EditorRow({
         <Select
           size="xs"
           placeholder="Category"
-          data={[{ value: SPLIT_VALUE, label: "⑂ Split between categories…" }, ...categoryData]}
+          data={[{ value: SPLIT_VALUE, label: "⑂ Split between categories…" }, ...pickerData]}
           value={categoryId}
           onChange={(v) => {
             if (v === SPLIT_VALUE) { splitCtrl.open(); return; }

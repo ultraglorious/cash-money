@@ -160,6 +160,17 @@ The one asymmetry worth remembering: **a tracking account belongs to your
 household but to no budget.** That is why moving cash to the broker asks for a
 category while moving it to your own savings does not.
 
+**Draining Ready-to-Assign is allowed, but only on purpose.** Money can leave
+the pool without an envelope — that's what happens when a categorized line
+isn't there — and sometimes that's exactly right (an unplanned contribution,
+a lump into investments you never budgeted). So the category picker offers the
+household's income categories under **Unbudgeted money**: choosing "Ready to
+Assign" drains the pool and touches no envelope, which is arithmetically
+identical to leaving the field blank but is a decision on the record. Rows that
+never made that decision — any on-budget outflow with no category that isn't a
+same-scope pocket shuffle — are flagged **needs a category** in the register and
+counted in the account header, so the drain is never silent.
+
 ## The import pipeline (`packages/core/src/import/`)
 
 Imports are **format-driven**: nothing about any particular app's CSV shape is
