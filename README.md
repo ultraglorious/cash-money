@@ -56,7 +56,7 @@ cash-money/
 │       ├── engine/         the envelope calculator (activity, available, RTA, cards)
 │       ├── import/         CSV parsing + the merge/reconcile pipeline
 │       ├── ops.ts          pure "edit the budget" operations (add/move/rename/…)
-│       └── persistence/    reading/writing the budget as files
+│       └── persistence/    the single-file .cashmoney format (+ legacy layout)
 └── apps/desktop/         ← the GUI. React + Mantine, packaged with Tauri.
     └── src/
         ├── state.tsx       app state; calls into packages/core

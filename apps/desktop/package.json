@@ -17,6 +17,7 @@
     "@mantine/core": "^7.13.4",
     "@mantine/dates": "^7.13.4",
     "@mantine/hooks": "^7.13.4",
+    "@mantine/notifications": "^7.17.8",
     "@tabler/icons-react": "^3.19.0",
     "@tanstack/react-virtual": "^3.14.9",
     "@tauri-apps/api": "^2.0.2",

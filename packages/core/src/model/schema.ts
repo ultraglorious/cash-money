@@ -126,6 +126,7 @@ export const AppIndexSchema = z.object({
   schemaVersion: z.number().int(),
   activeBudgetId: ulid.optional(),
   budgets: z.array(z.object({ id: ulid, name: z.string() })),
+  budgetFilePath: z.string().optional(),
 });
 
 export function parseBudget(raw: unknown): Budget {
