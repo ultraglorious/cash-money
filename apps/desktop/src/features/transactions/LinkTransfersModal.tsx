@@ -7,6 +7,7 @@ import { useActions, useBudgetState } from "../../state";
 import { money } from "../../format";
 
 const key = (c: TransferCandidate) => `${c.outflowId}|${c.inflowId}`;
+const UNDO_NOTIFICATION = "link-transfers-undo";
 
 /**
  * Money moved between your own budgets arrives from an export as two unrelated
@@ -20,7 +21,7 @@ const key = (c: TransferCandidate) => `${c.outflowId}|${c.inflowId}`;
  */
 export function LinkTransfersModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const { budget, currency } = useBudgetState();
-  const { linkTransfers } = useActions();
+  const { linkTransfers, undoBulk } = useActions();
   const accountName = (id: Ulid) => budget.accounts.find((a) => a.id === id)?.name ?? "—";
 
   const candidates = useMemo(() => (opened ? findTransferCandidates(budget) : []), [budget, opened]);
@@ -42,11 +43,45 @@ export function LinkTransfersModal({ opened, onClose }: { opened: boolean; onClo
 
   const commit = () => {
     const pairs = candidates.filter((c) => ticked.has(key(c))).map(({ outflowId, inflowId }) => ({ outflowId, inflowId }));
-    if (pairs.length > 0) linkTransfers(pairs);
+    if (pairs.length === 0) return;
+    const { linked, drift } = linkTransfers(pairs);
+
+    // Linking is only ever meant to describe money that already moved. If the
+    // projection disagrees, nothing is applied — say so instead of quietly
+    // leaving a wrong number behind.
+    if (drift.length > 0) {
+      notifications.show({
+        color: "red",
+        autoClose: false,
+        title: "Nothing was linked",
+        message: `That would have changed ${drift.length === 1 ? "a figure" : `${drift.length} figures`} in your budget, and linking is only supposed to rename things. Your budget is untouched — this is a bug worth reporting.`,
+      });
+      return;
+    }
+
+    // This carries the only undo affordance for an edit that can span years of
+    // rows, so it stays until dismissed rather than expiring in four seconds.
     notifications.show({
+      id: UNDO_NOTIFICATION,
       color: "teal",
-      title: `Linked ${pairs.length} transfer${pairs.length === 1 ? "" : "s"}`,
-      message: "Both sides now read as one transfer. No balance or Ready-to-Assign changed.",
+      autoClose: false,
+      title: `Linked ${linked} transfer${linked === 1 ? "" : "s"}`,
+      message: (
+        <Group gap="xs" align="center">
+          <Text size="sm">Both sides now read as one transfer, with every figure unchanged.</Text>
+          <Button
+            size="compact-xs"
+            variant="light"
+            onClick={() => {
+              undoBulk();
+              notifications.hide(UNDO_NOTIFICATION);
+              notifications.show({ color: "gray", message: "Linking undone — the rows read as they did before." });
+            }}
+          >
+            Undo
+          </Button>
+        </Group>
+      ),
     });
     onClose();
   };

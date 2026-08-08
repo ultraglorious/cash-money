@@ -3,6 +3,7 @@ import { Alert, Button, Center, Group, Loader, Stack, Text } from "@mantine/core
 import { notifications } from "@mantine/notifications";
 import {
   BudgetRepository,
+  applyPreservingNumbers,
   computeProjection,
   mergeBudgetFiles,
   newId,
@@ -14,6 +15,7 @@ import {
   type BudgetFileData,
   type Cents,
   type CurrencyConfig,
+  type Drift,
   type ImportSourceEntry,
   type LoadedBudget,
   type MonthKey,
@@ -26,6 +28,7 @@ import {
 import { demoBudget } from "./demo";
 import {
   backupBudgetFile,
+  snapshotBudgetFile,
   isConflictError,
   isTauri,
   readBudgetFile,
@@ -114,7 +117,15 @@ interface Actions {
   /** Rename every transaction with this exact payee. */
   renamePayee: (from: string, to: string) => void;
   /** Link imported rows that were always two halves of one transfer. */
-  linkTransfers: (pairs: readonly { outflowId: Ulid; inflowId: Ulid }[]) => void;
+  /**
+   * Link imported rows that were always two halves of one transfer. Refuses and
+   * reports if the edit would move money — it is only ever meant to describe it.
+   */
+  linkTransfers: (pairs: readonly { outflowId: Ulid; inflowId: Ulid }[]) => { linked: number; drift: Drift[] };
+  /** Undo the last bulk edit of this session; returns what it undid. */
+  undoBulk: () => string | null;
+  /** What the next undo would reverse, for labelling the button. */
+  undoableBulk: () => string | null;
   setSplits: (id: Ulid, splits: SplitLine[] | undefined, categoryIdWhenUnsplit?: Ulid) => void;
   /** Mark statement-confirmed rows reconciled and advance the account's reconciled-through date. */
   reconcileAccount: (accountId: Ulid, txIds: Ulid[], through: string) => void;
@@ -170,6 +181,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const formatsRef = useRef<SavedFormat[]>([]);
   const sourcesRef = useRef<ImportSourceEntry[]>([]);
   const backedUpRef = useRef(false);
+  // The budget as it stood before the last bulk edit, kept for undo. Session
+  // scoped: a bulk edit you can no longer see on screen is the snapshot files'
+  // job, not this one.
+  const undoRef = useRef<{ label: string; budget: LoadedBudget } | null>(null);
   const conflictRef = useRef(false);
   /** The last state known to be in sync with the file — the base for three-way merges. */
   const baseRef = useRef<BudgetFileData | null>(null);
@@ -484,6 +499,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // dispatch and refs, so its identity is stable for the app's lifetime.
   const actions = useMemo<Actions>(() => {
     const apply = (fn: (b: LoadedBudget) => LoadedBudget) => dispatch({ type: "apply", fn });
+
+    /**
+     * An edit that touches many rows at once. Keeps a dated copy of the file
+     * first (the rolling .bak is once per session, so it is no help when the
+     * bulk edit comes later), remembers the previous state for undo, and — for
+     * edits that claim to only describe money — refuses outright if the numbers
+     * would move. Both guards exist because a bad bulk edit is the one mistake
+     * that is genuinely hard to walk back by hand.
+     */
+    const applyBulk = (
+      label: string,
+      fn: (b: LoadedBudget) => LoadedBudget,
+      opts: { preservesNumbers?: boolean } = {},
+    ): Drift[] => {
+      const before = budgetRef.current;
+      if (!before) return [];
+      const { budget: next, drift } = opts.preservesNumbers
+        ? applyPreservingNumbers(before, fn)
+        : { budget: fn(before), drift: [] as Drift[] };
+      if (drift.length > 0) return drift;
+      const path = filePathRef.current;
+      if (path && isTauri()) void snapshotBudgetFile(path, label).catch(() => undefined);
+      undoRef.current = { label, budget: before };
+      dispatch({ type: "set", budget: next });
+      return [];
+    };
     /** Formats/sources changed without a budget edit: schedule a file save anyway. */
     const scheduleSave = () => {
       if (!budgetRef.current) return;
@@ -526,7 +567,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
       approveTransactions: (ids) => apply((b) => ops.approveTransactions(b, ids)),
       setClearedStatus: (ids, cleared) => apply((b) => ops.setClearedStatus(b, ids, cleared)),
       renamePayee: (from, to) => apply((b) => ops.renamePayee(b, from, to)),
-      linkTransfers: (pairs) => apply((b) => ops.linkTransfers(b, pairs).budget),
+      linkTransfers: (pairs) => {
+        const before = budgetRef.current;
+        const drift = applyBulk("link-transfers", (b) => ops.linkTransfers(b, pairs).budget, { preservesNumbers: true });
+        if (drift.length > 0) return { linked: 0, drift };
+        const after = budgetRef.current;
+        const linked = before && after ? ops.linkTransfers(before, pairs).linked : 0;
+        return { linked, drift: [] };
+      },
+      undoBulk: () => {
+        const undo = undoRef.current;
+        if (!undo) return null;
+        undoRef.current = null;
+        dispatch({ type: "set", budget: undo.budget });
+        return undo.label;
+      },
+      undoableBulk: () => undoRef.current?.label ?? null,
       setSplits: (id, splits, categoryIdWhenUnsplit) => apply((b) => ops.setSplits(b, id, splits, categoryIdWhenUnsplit)),
       reconcileAccount: (accountId, txIds, through) => apply((b) => ops.reconcileAccount(b, accountId, txIds, through)),
 

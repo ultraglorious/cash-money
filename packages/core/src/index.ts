@@ -19,6 +19,7 @@ export { deduceInvoiceCoverage, type InvoiceCoverage } from "./invoices.js";
 export * from "./analytics.js";
 export { findTransferCandidates, type PairConfidence, type TransferCandidate } from "./transferPairing.js";
 export { assignSuggestions, type AssignSuggestion, type AssignSuggestionKey } from "./suggest.js";
+export { applyPreservingNumbers, projectionDrift, type Drift } from "./invariants.js";
 export * from "./import/format.js";
 export { builtinFormat, builtinFormats } from "./import/formats/index.js";
 export { guessFormat, type FormatGuess } from "./import/guess.js";
