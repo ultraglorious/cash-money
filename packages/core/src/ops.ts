@@ -294,6 +294,25 @@ function transferPayee(amount: number, counterName: string): string {
   return amount < 0 ? `Transfer to: ${counterName}` : `Transfer from: ${counterName}`;
 }
 
+/**
+ * Rewrite every transfer leg's payee to the canonical direction-aware text —
+ * imported transfers carry whatever the source export called them. Idempotent
+ * and cosmetic only: pairing and import identities are untouched (identity is
+ * stored provenance, never re-derived from the payee).
+ */
+export function normalizeTransferPayees(b: LoadedBudget): { budget: LoadedBudget; changed: number } {
+  const nameOf = new Map(b.accounts.map((a) => [a.id, a.name]));
+  let changed = 0;
+  const transactions = b.transactions.map((t) => {
+    if (!t.transfer) return t;
+    const want = transferPayee(t.amount, nameOf.get(t.transfer.counterAccountId) ?? "—");
+    if (t.payee === want) return t;
+    changed++;
+    return { ...t, payee: want };
+  });
+  return changed > 0 ? { budget: { ...b, transactions }, changed } : { budget: b, changed: 0 };
+}
+
 export interface TransferArgs {
   /** The account the user is entering the transfer FROM the perspective of. */
   accountId: Ulid;

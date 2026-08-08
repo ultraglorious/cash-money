@@ -219,20 +219,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const adoptRef = useRef<(path: string, contents: string, mtimeMs: number) => void>(() => {});
   adoptRef.current = (path, contents, mtimeMs) => {
     const data = parseBudgetFile(contents); // throws on anything invalid
+    // One-time cosmetic migration: imported transfer legs get the canonical
+    // "Transfer to/from" payees. Idempotent — 0 changes on every later load.
+    const { budget: loaded, changed } = ops.normalizeTransferPayees(data.loaded);
     filePathRef.current = path;
     fileMtimeRef.current = mtimeMs;
     formatsRef.current = data.savedFormats;
     sourcesRef.current = data.importSources;
-    baseRef.current = data;
+    baseRef.current = { ...data, loaded };
     pendingRef.current = null;
     backedUpRef.current = false;
     conflictRef.current = false;
-    skipPersistRef.current = true; // this state IS the file; nothing to save back
+    skipPersistRef.current = changed === 0; // normalized rows should be saved back
     setFileConflict(false);
     setFilePath(path);
     setLoadError(null);
     setNeedsSetup(false);
-    dispatch({ type: "set", budget: data.loaded });
+    dispatch({ type: "set", budget: loaded });
   };
 
   /**
@@ -348,7 +351,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       if (!isTauri()) {
-        if (!cancelled) dispatch({ type: "set", budget: demoBudget() });
+        if (!cancelled) dispatch({ type: "set", budget: ops.normalizeTransferPayees(demoBudget()).budget });
         return;
       }
       const repo = new BudgetRepository(new TauriFileSystem());
@@ -363,7 +366,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // First run on the single-file format: migrate legacy data if present;
         // on a truly fresh machine, ask create-or-open instead of assuming.
         if (app.activeBudgetId) {
-          const loaded = await repo.loadBudget(app.activeBudgetId);
+          const loaded = ops.normalizeTransferPayees(await repo.loadBudget(app.activeBudgetId)).budget;
           formatsRef.current = await repo.loadFormats().catch(() => []);
           sourcesRef.current = await repo.loadImportSources(app.activeBudgetId).catch(() => []);
           if (!cancelled) await followNewFileRef.current(loaded);

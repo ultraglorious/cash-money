@@ -282,6 +282,28 @@ describe("transaction ops", () => {
     expect(c2).toMatchObject({ amount: 30000, date: "2026-01-21", memo: "more", cleared: "uncleared" });
   });
 
+  it("normalizeTransferPayees rewrites imported transfer payees, idempotently, leaving the rest alone", () => {
+    const SAV = f.tid("ASAV");
+    const pair = f.tid("PN1");
+    const withImported = {
+      ...base(),
+      accounts: [...base().accounts, f.account({ id: SAV, name: "Savings", type: "checking" })],
+    };
+    withImported.transactions = [
+      ...withImported.transactions,
+      f.txn({ id: f.tid("TL1"), accountId: CHK, date: "2026-01-12", amount: -5000 as Cents, payee: "Transfer : Savings", transfer: { counterAccountId: SAV, pairId: pair } }),
+      f.txn({ id: f.tid("TL2"), accountId: SAV, date: "2026-01-12", amount: 5000 as Cents, payee: "Transfer : Checking", transfer: { counterAccountId: CHK, pairId: pair } }),
+    ];
+    const { budget: b, changed } = ops.normalizeTransferPayees(withImported);
+    expect(changed).toBe(2);
+    expect(b.transactions.find((t) => t.id === f.tid("TL1"))!.payee).toBe("Transfer to: Savings");
+    expect(b.transactions.find((t) => t.id === f.tid("TL2"))!.payee).toBe("Transfer from: Checking");
+    expect(b.transactions.find((t) => t.id === f.tid("TGRO"))!.payee).toBe(withImported.transactions.find((t) => t.id === f.tid("TGRO"))!.payee);
+    const again = ops.normalizeTransferPayees(b);
+    expect(again.changed).toBe(0);
+    expect(again.budget).toBe(b); // untouched object when nothing changes
+  });
+
   it("deleting or approving one transfer leg takes both", () => {
     const SAV = f.tid("ASAV");
     const withSavings = { ...base(), accounts: [...base().accounts, f.account({ id: SAV, name: "Savings", type: "checking" })] };
