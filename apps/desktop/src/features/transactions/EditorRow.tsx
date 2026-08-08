@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ActionIcon, Autocomplete, Badge, Box, Group, NumberInput, Select, TextInput } from "@mantine/core";
+import { ActionIcon, Autocomplete, Badge, Box, Group, NumberInput, Select, TextInput, Tooltip } from "@mantine/core";
 import { DatePickerInput } from "@mantine/dates";
 import { useDisclosure } from "@mantine/hooks";
 import { IconCheck, IconMinus, IconPlus, IconX } from "@tabler/icons-react";
@@ -88,20 +88,27 @@ export function EditorRow({
     accountData.filter((a) => a.value !== accountId).map((a) => [`${TRANSFER_PREFIX}${a.label}`, a.value]),
   );
   const nameOfAccount = (id: string | null) => accountData.find((a) => a.value === id)?.label ?? "—";
-  // Two kinds of transfer, functionally distinct:
-  //  - WITHIN a household (incl. its cards): a pure pocket-shuffle — no
-  //    category, invisible to envelopes and analytics.
-  //  - OUT OF the household (another household, or an off-budget tracking
-  //    account): from this side it behaves like any regular payee — spending
-  //    from an envelope (the receiving household's Ready-to-Assign rises on
-  //    its own) — so the normal Category field stays available.
+  // A transfer means whatever boundary it crosses (see ARCHITECTURE.md,
+  // "Transfers: three nested boundaries"):
+  //  - WITHIN one budget scope (same household, incl. its cards): a pocket
+  //    shuffle — no category, invisible to envelopes and analytics.
+  //  - LEAVING this budget scope, either between budgets (another household)
+  //    or out of budget entirely (a tracking account): the money left this
+  //    budget's spendable pool, so the outflow leg spends an envelope like any
+  //    regular payee — hence the normal Category field.
+  // A tracking account belongs to the household but to no budget, which is why
+  // it lands on the leaving side.
   const accOf = (id: string | null) => accountData.find((a) => a.value === id);
-  const poolOf = (id: string | null): string | undefined => {
+  const budgetScopeOf = (id: string | null): string | undefined => {
     const a = accOf(id);
     if (!a) return undefined;
-    return a.onBudget === false ? "__off-budget__" : a.household ?? "__no-household__";
+    return a.onBudget === false ? "__no-budget__" : a.household ?? "__no-household__";
   };
-  const outOfHousehold = !!transferTo && poolOf(accountId) !== poolOf(transferTo);
+  const leavesBudget = !!transferTo && budgetScopeOf(accountId) !== budgetScopeOf(transferTo);
+  const leavesBudgetHint =
+    accOf(transferTo)?.onBudget === false
+      ? `Leaves the budget for ${nameOfAccount(transferTo)} — still yours, but no longer spendable, so it spends an envelope.`
+      : `Leaves this budget for ${accOf(transferTo)?.household ?? nameOfAccount(transferTo)} — spends an envelope here, lands as money to assign there.`;
 
   const signedMagnitude = (): Cents => {
     const cents = Math.round(Number(magnitude || 0) * 100);
@@ -123,7 +130,7 @@ export function EditorRow({
         ...base,
         amount: signedMagnitude(),
         transferAccountId: transferTo as Ulid,
-        ...(outOfHousehold && categoryId ? { categoryId: categoryId as Ulid } : {}),
+        ...(leavesBudget && categoryId ? { categoryId: categoryId as Ulid } : {}),
       });
     else if (splits) onSubmit({ ...base, amount: splitTotal, splits });
     else onSubmit({ ...base, amount: signedMagnitude(), ...(categoryId ? { categoryId: categoryId as Ulid } : {}) });
@@ -173,20 +180,24 @@ export function EditorRow({
       />
       {transferTo ? (
         <Group gap={4} wrap="nowrap">
-          {outOfHousehold ? (
-            <Select
-              size="xs"
-              placeholder="Category"
-              data={categoryData}
-              value={categoryId}
-              onChange={(v) => setCategoryId(v)}
-              searchable
-              clearable
-              comboboxProps={{ withinPortal: true }}
-              style={{ flex: 1 }}
-            />
+          {leavesBudget ? (
+            <Tooltip label={leavesBudgetHint} openDelay={400} withinPortal multiline w={280}>
+              <Select
+                size="xs"
+                placeholder="Category"
+                data={categoryData}
+                value={categoryId}
+                onChange={(v) => setCategoryId(v)}
+                searchable
+                clearable
+                comboboxProps={{ withinPortal: true }}
+                style={{ flex: 1 }}
+              />
+            </Tooltip>
           ) : (
-            <Badge color="blue" variant="light">Transfer: {nameOfAccount(transferTo)}</Badge>
+            <Tooltip label="Within this budget — money changes pocket, no envelope is touched." openDelay={400} withinPortal multiline w={280}>
+              <Badge color="blue" variant="light">Transfer: {nameOfAccount(transferTo)}</Badge>
+            </Tooltip>
           )}
           {!initial?.transfer && (
             <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => { setTransferTo(null); setPayee(""); }} aria-label="Clear transfer">

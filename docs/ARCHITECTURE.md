@@ -92,13 +92,73 @@ numbers: derived activity and available match 100% of category-month cells.
 
 **Households.** Accounts, sections, and categories carry a household label. Each
 household is its own money pool with its own Ready-to-Assign (computed as
-above). Money moving between households stays exactly as the source budgets
+above) — a household is really a **budget scope**, not a claim about who owns
+the money. Money moving between households stays exactly as the source budgets
 recorded it — a categorized expense on the sending side, income on the receiving
-side — which is what makes each household's number come out right.
+side — which is what makes each household's number come out right. See
+[Transfers: three nested boundaries](#transfers-three-nested-boundaries).
 
 **Off-budget accounts.** Tracking accounts (investments) don't affect envelopes;
 their balances are shown but excluded from the budget math. Unapproved
 (scheduled) transactions are excluded until approved.
+
+## Transfers: three nested boundaries
+
+Every account you own sits inside three rings. A transfer is defined by the
+outermost ring it crosses, and that alone decides what it means.
+
+```mermaid
+flowchart LR
+  subgraph NW["① Net worth — everything you own"]
+    subgraph P["② Budget scope: Personal<br/>own Ready-to-Assign + envelopes"]
+      PC(["③ Checking"])
+      PV(["③ Visa"])
+    end
+    subgraph J["② Budget scope: Joint<br/>own Ready-to-Assign + envelopes"]
+      JC(["③ Joint Checking"])
+    end
+    subgraph T["No budget scope — tracking accounts<br/>no Ready-to-Assign, no envelopes"]
+      BR(["③ Broker"])
+    end
+  end
+
+  PC -- "crosses ③ only<br/><b>within budget</b> · no category" --> PV
+  PC -- "crosses ②<br/><b>between budgets</b> · category" --> JC
+  PC -- "crosses ②<br/><b>out of budget</b> · category" --> BR
+```
+
+**Ring ③ — the account.** A transfer that crosses only this (Checking → Savings
+in the same household, or paying your own Visa) is a pocket-shuffle. It carries
+no category, the engine treats it as a no-op, and envelopes, Ready-to-Assign,
+net worth and the spending analytics all ignore it.
+
+**Ring ② — the budget scope.** This is what a *household* actually is: a set of
+on-budget accounts sharing one Ready-to-Assign and one set of envelopes. Money
+crossing it leaves this budget's spendable pool, so the outflow leg **carries a
+category** — it spends an envelope exactly like a regular payee, which is what
+keeps the sender's Ready-to-Assign whole. Two flavours, identical mechanically:
+
+- **between budgets** — to another household. The receiving budget's
+  Ready-to-Assign rises on its own through the cash pool; that side needs no
+  category.
+- **out of budget** — to a tracking account. Still your money, but no budget
+  receives it, so nothing rises anywhere. Funding investments is planned
+  spending from the budget's point of view, and this is how it gets planned.
+
+**Ring ① — net worth.** Nothing internal crosses it. Only real income and real
+expenses do. That's why *every* transfer, categorized or not, nets out of the
+global analytics: your total didn't move, only which pocket held it. Drill into
+one account and you see the real outflow from *there*.
+
+| crosses | category | envelope | that budget's RTA | net worth | global analytics |
+| --- | --- | --- | --- | --- | --- |
+| ③ account | none | — | — | — | ignored |
+| ② budget scope | on the outflow leg | spent | sender held whole; receiver's rises | — | netted out |
+| ① net worth | n/a — that's a payee, not a transfer | spent | falls | falls | counted |
+
+The one asymmetry worth remembering: **a tracking account belongs to your
+household but to no budget.** That is why moving cash to the broker asks for a
+category while moving it to your own savings does not.
 
 ## The import pipeline (`packages/core/src/import/`)
 

@@ -162,13 +162,15 @@ function gatherTransactions(
         bump(cardTransfer, t.accountId, m, t.amount); // a payment into the card
         continue;
       }
-      // Two kinds of transfer. WITHIN a household: a pure pocket-shuffle —
-      // uncategorized, falls out as a no-op below. OUT OF the household
-      // (another household, or an off-budget tracking account): the outflow
-      // leg behaves like regular spending — it carries a category, and the
-      // activity below spends the envelope so the sender's Ready-to-Assign
-      // stays whole. A receiving on-budget household's RTA rises through the
-      // cash pool above on its own; no category needed on that side.
+      // A transfer means whatever boundary it crosses. WITHIN one budget scope
+      // (same household): a pocket shuffle — uncategorized, so it falls out as
+      // a no-op below. LEAVING this budget scope — to another household, or
+      // out of budget entirely to a tracking account — the money is no longer
+      // spendable here, so the outflow leg carries a category and the activity
+      // below spends that envelope, keeping the sender's Ready-to-Assign
+      // whole. A receiving household's RTA rises through the cash pool above
+      // on its own; no category needed on that side, and a tracking account
+      // has no budget to receive it at all.
     }
 
     const lines = t.splits ?? [{ categoryId: t.categoryId, amount: t.amount }];

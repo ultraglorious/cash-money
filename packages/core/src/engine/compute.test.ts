@@ -49,7 +49,7 @@ function creditCardScenario(): LoadedBudget {
   };
 }
 
-describe("cross-household transfers with a funded outflow leg", () => {
+describe("transfers that leave a budget scope carry a funded outflow leg", () => {
   const personal = f.account({ id: f.tid("APER"), name: "Personal", type: "checking", household: "Personal" });
   const joint = f.account({ id: f.tid("AJNT"), name: "Joint", type: "checking", household: "Joint" });
   const incomeGrp = f.group({ id: f.tid("GIN2"), name: "Inflow", kind: "income", sortOrder: 0 });
@@ -87,7 +87,7 @@ describe("cross-household transfers with a funded outflow leg", () => {
     expect(p.readyToAssignOf("2026-06")).toBe(500000); // households sum cleanly
   });
 
-  it("treats a funded transfer to an off-budget tracking account the same way", () => {
+  it("treats leaving the budget entirely (a tracking account) the same way", () => {
     const broker = f.account({ id: f.tid("ABRK"), name: "Broker", type: "tracking", onBudget: false, household: "Personal" });
     const invest = f.category({ id: f.tid("CIV2"), groupId: evGrp.id, name: "Investing" });
     const pair2 = f.tid("PAIRA");

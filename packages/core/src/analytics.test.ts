@@ -156,7 +156,7 @@ describe("householdTransferIds (global perspective)", () => {
   });
 });
 
-describe("categorized transfer legs (cross-household funding as real transfers)", () => {
+describe("categorized transfer legs (transfers that leave a budget scope)", () => {
   const JNT2 = f.tid("AJN2");
   const pair = f.tid("PRX1");
   function withPair(): LoadedBudget {
