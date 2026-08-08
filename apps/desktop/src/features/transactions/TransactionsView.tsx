@@ -46,7 +46,9 @@ export function TransactionsView() {
   const template = registerTemplate(!!single);
 
   const categoryLabel = (t: Transaction): string => {
-    if (t.transfer) return `Transfer: ${accountName(t.transfer.counterAccountId)}`;
+    // An out-of-household transfer's funded leg reads like regular spending —
+    // its envelope; only within-household (pocket-shuffle) legs say Transfer.
+    if (t.transfer) return t.categoryId ? categoryName(t.categoryId) : `Transfer: ${accountName(t.transfer.counterAccountId)}`;
     if (t.splits) return `Split (${t.splits.length})`;
     return categoryName(t.categoryId);
   };

@@ -86,6 +86,31 @@ describe("cross-household transfers with a funded outflow leg", () => {
     expect(byHh.get("Joint")).toBe(200000);
     expect(p.readyToAssignOf("2026-06")).toBe(500000); // households sum cleanly
   });
+
+  it("treats a funded transfer to an off-budget tracking account the same way", () => {
+    const broker = f.account({ id: f.tid("ABRK"), name: "Broker", type: "tracking", onBudget: false, household: "Personal" });
+    const invest = f.category({ id: f.tid("CIV2"), groupId: evGrp.id, name: "Investing" });
+    const pair2 = f.tid("PAIRA");
+    const b2: LoadedBudget = {
+      ...b,
+      accounts: [...b.accounts, broker],
+      categories: [...b.categories, invest],
+      assignments: [...b.assignments, f.assignment({ id: f.tid("ASA2"), month: "2026-06", categoryId: invest.id, assigned: 100000 as Cents })],
+      transactions: [
+        ...b.transactions,
+        f.txn({ id: f.tid("TB1"), accountId: personal.id, date: "2026-06-15", amount: -100000 as Cents, categoryId: invest.id, payee: "Transfer to: Broker", transfer: { counterAccountId: broker.id, pairId: pair2 } }),
+        f.txn({ id: f.tid("TB2"), accountId: broker.id, date: "2026-06-15", amount: 100000 as Cents, payee: "Transfer from: Personal", categoryId: undefined, transfer: { counterAccountId: personal.id, pairId: pair2 } }),
+      ],
+    };
+    const p2 = computeProjection(b2);
+    // The envelope spends; Personal's RTA drops only by what was ASSIGNED.
+    expect(p2.activityOf(f.tid("CIV2"), "2026-06")).toBe(-100000);
+    expect(p2.availableOf(f.tid("CIV2"), "2026-06")).toBe(0);
+    expect(p2.readyToAssignByHousehold("2026-06").get("Personal")).toBe(200000); // 5000 − 2000 − 1000 assigned
+    // Net-worth view of the same move: money changed pockets, not size.
+    const bal = p2.accountBalances();
+    expect(bal.get(f.tid("ABRK"))).toBe(100000);
+  });
 });
 
 describe("credit-card auto-move", () => {

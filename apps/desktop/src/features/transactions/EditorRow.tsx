@@ -88,17 +88,20 @@ export function EditorRow({
     accountData.filter((a) => a.value !== accountId).map((a) => [`${TRANSFER_PREFIX}${a.label}`, a.value]),
   );
   const nameOfAccount = (id: string | null) => accountData.find((a) => a.value === id)?.label ?? "—";
-  // A transfer BETWEEN households: the receiving household's Ready-to-Assign
-  // rises on its own; the sending side should be funded from an envelope, so
-  // the category picker stays available for the outflow leg.
+  // Two kinds of transfer, functionally distinct:
+  //  - WITHIN a household (incl. its cards): a pure pocket-shuffle — no
+  //    category, invisible to envelopes and analytics.
+  //  - OUT OF the household (another household, or an off-budget tracking
+  //    account): from this side it behaves like any regular payee — spending
+  //    from an envelope (the receiving household's Ready-to-Assign rises on
+  //    its own) — so the normal Category field stays available.
   const accOf = (id: string | null) => accountData.find((a) => a.value === id);
-  const crossHousehold =
-    !!transferTo &&
-    (accOf(accountId)?.onBudget ?? true) &&
-    (accOf(transferTo)?.onBudget ?? true) &&
-    !!accOf(accountId)?.household &&
-    !!accOf(transferTo)?.household &&
-    accOf(accountId)!.household !== accOf(transferTo)!.household;
+  const poolOf = (id: string | null): string | undefined => {
+    const a = accOf(id);
+    if (!a) return undefined;
+    return a.onBudget === false ? "__off-budget__" : a.household ?? "__no-household__";
+  };
+  const outOfHousehold = !!transferTo && poolOf(accountId) !== poolOf(transferTo);
 
   const signedMagnitude = (): Cents => {
     const cents = Math.round(Number(magnitude || 0) * 100);
@@ -120,7 +123,7 @@ export function EditorRow({
         ...base,
         amount: signedMagnitude(),
         transferAccountId: transferTo as Ulid,
-        ...(crossHousehold && categoryId ? { categoryId: categoryId as Ulid } : {}),
+        ...(outOfHousehold && categoryId ? { categoryId: categoryId as Ulid } : {}),
       });
     else if (splits) onSubmit({ ...base, amount: splitTotal, splits });
     else onSubmit({ ...base, amount: signedMagnitude(), ...(categoryId ? { categoryId: categoryId as Ulid } : {}) });
@@ -170,10 +173,10 @@ export function EditorRow({
       />
       {transferTo ? (
         <Group gap={4} wrap="nowrap">
-          {crossHousehold ? (
+          {outOfHousehold ? (
             <Select
               size="xs"
-              placeholder="Fund from envelope…"
+              placeholder="Category"
               data={categoryData}
               value={categoryId}
               onChange={(v) => setCategoryId(v)}

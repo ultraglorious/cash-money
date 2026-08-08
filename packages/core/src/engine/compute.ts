@@ -162,11 +162,13 @@ function gatherTransactions(
         bump(cardTransfer, t.accountId, m, t.amount); // a payment into the card
         continue;
       }
-      // A CROSS-HOUSEHOLD transfer's outflow leg may carry a category: the
-      // sender funds it from an envelope (activity below keeps the sender's
-      // Ready-to-Assign whole), while the receiving household's RTA rises
-      // through the cash pool above — no category needed on that side.
-      // Same-pool transfers stay uncategorized and fall out as no-ops.
+      // Two kinds of transfer. WITHIN a household: a pure pocket-shuffle —
+      // uncategorized, falls out as a no-op below. OUT OF the household
+      // (another household, or an off-budget tracking account): the outflow
+      // leg behaves like regular spending — it carries a category, and the
+      // activity below spends the envelope so the sender's Ready-to-Assign
+      // stays whole. A receiving on-budget household's RTA rises through the
+      // cash pool above on its own; no category needed on that side.
     }
 
     const lines = t.splits ?? [{ categoryId: t.categoryId, amount: t.amount }];
