@@ -281,8 +281,208 @@ export function updateTransaction(
   return { ...b, transactions: replace(b.transactions, txId, (t) => ({ ...t, ...patch })) };
 }
 
+/** Both row ids of a transfer pair (or just the id when the row isn't one). */
+function pairIds(b: LoadedBudget, txId: Ulid): Ulid[] {
+  const t = b.transactions.find((x) => x.id === txId);
+  if (!t?.transfer) return [txId];
+  const other = b.transactions.find((x) => x.id !== txId && x.transfer?.pairId === t.transfer!.pairId);
+  return other ? [txId, other.id] : [txId];
+}
+
+/** A transfer's payee is derived, direction-aware text. */
+function transferPayee(amount: number, counterName: string): string {
+  return amount < 0 ? `Transfer to: ${counterName}` : `Transfer from: ${counterName}`;
+}
+
+/**
+ * Rewrite every transfer leg's payee to the canonical direction-aware text —
+ * imported transfers carry whatever the source export called them. Idempotent
+ * and cosmetic only: pairing and import identities are untouched (identity is
+ * stored provenance, never re-derived from the payee).
+ */
+export function normalizeTransferPayees(b: LoadedBudget): { budget: LoadedBudget; changed: number } {
+  const nameOf = new Map(b.accounts.map((a) => [a.id, a.name]));
+  let changed = 0;
+  const transactions = b.transactions.map((t) => {
+    if (!t.transfer) return t;
+    const want = transferPayee(t.amount, nameOf.get(t.transfer.counterAccountId) ?? "—");
+    if (t.payee === want) return t;
+    changed++;
+    return { ...t, payee: want };
+  });
+  return changed > 0 ? { budget: { ...b, transactions }, changed } : { budget: b, changed: 0 };
+}
+
+/**
+ * Link rows that were always two halves of one transfer — the pairs
+ * `findTransferCandidates` turns up in imported data — into real transfer pairs.
+ *
+ * Nothing is merged or deleted: both rows stay exactly where they are, for
+ * exactly the amounts they had. The outflow leg KEEPS its category, because
+ * that envelope is what funded the transfer and dropping it is precisely the
+ * mistake the old cross-budget "stitch" made (it left the sender's envelope
+ * unspent and Ready-to-Assign badly negative). The inflow leg's income category
+ * goes: money arriving from another budget lands in the cash pool and raises
+ * Ready-to-Assign on its own, and income categories are skipped by the engine
+ * either way — so every derived number is identical before and after. What
+ * changes is the payees, which become the canonical transfer text, and the fact
+ * that global analytics now recognise the pair without having to guess.
+ *
+ * Pairs whose rows have gone missing, or that already belong to a transfer, are
+ * skipped rather than treated as an error. So are the two shapes where linking
+ * would move money instead of describing it, which is the one thing this must
+ * never do: an arriving leg that carries a spending envelope (that's a REFUND —
+ * the category is the point of the row), and a leg on a credit card (the engine
+ * reads money arriving on a card as a payment against its payment envelope).
+ */
+export function linkTransfers(
+  b: LoadedBudget,
+  pairs: readonly { outflowId: Ulid; inflowId: Ulid }[],
+): { budget: LoadedBudget; linked: number } {
+  const byId = new Map(b.transactions.map((t) => [t.id, t]));
+  const nameOf = new Map(b.accounts.map((a) => [a.id, a.name]));
+  const isCard = new Set(b.accounts.filter((a) => a.type === "creditCard").map((a) => a.id));
+  const incomeGroups = new Set(b.groups.filter((g) => g.kind === "income").map((g) => g.id));
+  const incomeCats = new Set(b.categories.filter((c) => incomeGroups.has(c.groupId)).map((c) => c.id));
+  const patch = new Map<Ulid, Transaction>();
+
+  for (const { outflowId, inflowId } of pairs) {
+    const out = byId.get(outflowId);
+    const inn = byId.get(inflowId);
+    if (!out || !inn || out.transfer || inn.transfer) continue;
+    if (patch.has(out.id) || patch.has(inn.id)) continue;
+    if (inn.categoryId && !incomeCats.has(inn.categoryId)) continue; // a refund, not an arrival
+    if (isCard.has(out.accountId) || isCard.has(inn.accountId)) continue;
+    const pairId = newId();
+    patch.set(out.id, {
+      ...out,
+      payee: transferPayee(out.amount, nameOf.get(inn.accountId) ?? "—"),
+      transfer: { counterAccountId: inn.accountId, pairId },
+    });
+    patch.set(inn.id, {
+      ...inn,
+      payee: transferPayee(inn.amount, nameOf.get(out.accountId) ?? "—"),
+      categoryId: undefined,
+      transfer: { counterAccountId: out.accountId, pairId },
+    });
+  }
+
+  if (patch.size === 0) return { budget: b, linked: 0 };
+  return {
+    budget: { ...b, transactions: b.transactions.map((t) => patch.get(t.id) ?? t) },
+    linked: patch.size / 2,
+  };
+}
+
+export interface TransferArgs {
+  /** The account the user is entering the transfer FROM the perspective of. */
+  accountId: Ulid;
+  counterAccountId: Ulid;
+  date: ISODate;
+  /** Signed for `accountId`'s leg: negative = money leaves it. */
+  amount: Cents;
+  memo: string;
+  approved: boolean;
+  clearedThis: ClearedStatus;
+  clearedCounter: ClearedStatus;
+  /**
+   * Envelope funding the OUTFLOW leg — for cross-household transfers, where
+   * the sender spends from an envelope while the receiver's Ready-to-Assign
+   * rises through the cash pool. Same-pool transfers leave this unset.
+   */
+  categoryId?: Ulid;
+}
+
+/** Record money moving between two accounts: both legs, linked by a pair id. */
+export function addTransfer(b: LoadedBudget, args: TransferArgs): LoadedBudget {
+  const nameOf = (id: Ulid): string => b.accounts.find((a) => a.id === id)?.name ?? "—";
+  const pairId = newId();
+  const common = { date: args.date, effectiveDate: args.date, memo: args.memo, approved: args.approved };
+  const legA: Transaction = {
+    id: newId(),
+    accountId: args.accountId,
+    ...common,
+    payee: transferPayee(args.amount, nameOf(args.counterAccountId)),
+    amount: args.amount,
+    cleared: args.clearedThis,
+    ...(args.categoryId && args.amount < 0 ? { categoryId: args.categoryId } : {}),
+    transfer: { counterAccountId: args.counterAccountId, pairId },
+  };
+  const legB: Transaction = {
+    id: newId(),
+    accountId: args.counterAccountId,
+    ...common,
+    payee: transferPayee(-args.amount, nameOf(args.accountId)),
+    amount: -args.amount as Cents,
+    cleared: args.clearedCounter,
+    ...(args.categoryId && args.amount > 0 ? { categoryId: args.categoryId } : {}),
+    transfer: { counterAccountId: args.accountId, pairId },
+  };
+  return addTransactions(b, [legA, legB]);
+}
+
+/**
+ * Edit one leg of a transfer and mirror the change onto the other: date,
+ * memo, and amount stay equal-and-opposite, and re-pointing either end keeps
+ * the pair consistent. Cleared status stays per-leg (each side settles at its
+ * own bank in its own time).
+ */
+export function updateTransfer(
+  b: LoadedBudget,
+  txId: Ulid,
+  patch: { accountId?: Ulid; counterAccountId?: Ulid; date?: ISODate; amount?: Cents; memo?: string; cleared?: ClearedStatus; categoryId?: Ulid },
+): LoadedBudget {
+  const t = b.transactions.find((x) => x.id === txId);
+  if (!t?.transfer) return b;
+  const otherId = pairIds(b, txId).find((id) => id !== txId);
+  const nameOf = (id: Ulid): string => b.accounts.find((a) => a.id === id)?.name ?? "—";
+
+  const accountId = patch.accountId ?? t.accountId;
+  const counterAccountId = patch.counterAccountId ?? t.transfer.counterAccountId;
+  const date = patch.date ?? t.date;
+  const amount = patch.amount ?? t.amount;
+  const memo = patch.memo ?? t.memo;
+  // The funding envelope lives on whichever leg the money LEAVES.
+  const other = otherId ? b.transactions.find((x) => x.id === otherId) : undefined;
+  const categoryId = "categoryId" in patch ? patch.categoryId : t.categoryId ?? other?.categoryId;
+
+  const transactions = b.transactions.map((x) => {
+    if (x.id === txId) {
+      return {
+        ...x,
+        accountId,
+        date,
+        effectiveDate: x.effectiveDate === x.date ? date : x.effectiveDate,
+        amount,
+        memo,
+        payee: transferPayee(amount, nameOf(counterAccountId)),
+        cleared: patch.cleared ?? x.cleared,
+        categoryId: amount < 0 ? categoryId : undefined,
+        transfer: { ...x.transfer!, counterAccountId },
+      };
+    }
+    if (otherId && x.id === otherId) {
+      return {
+        ...x,
+        accountId: counterAccountId,
+        date,
+        effectiveDate: x.effectiveDate === x.date ? date : x.effectiveDate,
+        amount: -amount as Cents,
+        memo,
+        payee: transferPayee(-amount, nameOf(accountId)),
+        categoryId: -amount < 0 ? categoryId : undefined,
+        transfer: { ...x.transfer!, counterAccountId: accountId },
+      };
+    }
+    return x;
+  });
+  return { ...b, transactions };
+}
+
+/** Deleting one leg of a transfer removes both — a lone leg is a lie. */
 export function deleteTransaction(b: LoadedBudget, txId: Ulid): LoadedBudget {
-  return { ...b, transactions: b.transactions.filter((t) => t.id !== txId) };
+  const ids = new Set(pairIds(b, txId));
+  return { ...b, transactions: b.transactions.filter((t) => !ids.has(t.id)) };
 }
 
 /**
@@ -317,7 +517,8 @@ export function approveTransaction(b: LoadedBudget, txId: Ulid): LoadedBudget {
  * next occurrence into the schedule.
  */
 export function approveTransactions(b: LoadedBudget, txIds: readonly Ulid[]): LoadedBudget {
-  const ids = new Set(txIds);
+  // A transfer pair approves as one: a half-approved pair would unbalance accounts.
+  const ids = new Set(txIds.flatMap((id) => pairIds(b, id)));
   const successors: Transaction[] = [];
   const transactions = b.transactions.map((t) => {
     if (!ids.has(t.id) || t.approved) return t;
@@ -344,9 +545,9 @@ export function setClearedStatus(b: LoadedBudget, txIds: readonly Ulid[], cleare
   };
 }
 
-/** Delete many transactions in one pass. */
+/** Delete many transactions in one pass; transfer pairs go together. */
 export function deleteTransactions(b: LoadedBudget, txIds: readonly Ulid[]): LoadedBudget {
-  const ids = new Set(txIds);
+  const ids = new Set(txIds.flatMap((id) => pairIds(b, id)));
   return { ...b, transactions: b.transactions.filter((t) => !ids.has(t.id)) };
 }
 

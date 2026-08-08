@@ -49,6 +49,89 @@ function creditCardScenario(): LoadedBudget {
   };
 }
 
+describe("transfers that leave a budget scope carry a funded outflow leg", () => {
+  const personal = f.account({ id: f.tid("APER"), name: "Personal", type: "checking", household: "Personal" });
+  const joint = f.account({ id: f.tid("AJNT"), name: "Joint", type: "checking", household: "Joint" });
+  const incomeGrp = f.group({ id: f.tid("GIN2"), name: "Inflow", kind: "income", sortOrder: 0 });
+  const evGrp = f.group({ id: f.tid("GEV2"), name: "Everyday", kind: "normal", sortOrder: 1, household: "Personal" });
+  const rta = f.category({ id: f.tid("CRT2"), groupId: incomeGrp.id, name: "Ready to Assign" });
+  const contrib = f.category({ id: f.tid("CCO2"), groupId: evGrp.id, name: "Joint contribution" });
+  const pairId = f.tid("PAIR9");
+
+  const b: LoadedBudget = {
+    budget: f.budget(),
+    accounts: [personal, joint],
+    groups: [incomeGrp, evGrp],
+    categories: [rta, contrib],
+    assignments: [f.assignment({ id: f.tid("AS9"), month: "2026-06", categoryId: contrib.id, assigned: 200000 as Cents })],
+    transactions: [
+      f.txn({ id: f.tid("TI9"), accountId: personal.id, date: "2026-06-01", amount: 500000 as Cents, categoryId: rta.id, payee: "Employer" }),
+      // The contribution: a REAL transfer whose outflow leg spends from the envelope.
+      f.txn({ id: f.tid("TO9"), accountId: personal.id, date: "2026-06-28", amount: -200000 as Cents, categoryId: contrib.id, payee: "Transfer to: Joint", transfer: { counterAccountId: joint.id, pairId } }),
+      f.txn({ id: f.tid("TR9"), accountId: joint.id, date: "2026-06-28", amount: 200000 as Cents, payee: "Transfer from: Personal", categoryId: undefined, transfer: { counterAccountId: personal.id, pairId } }),
+    ],
+  };
+  const p = computeProjection(b);
+
+  it("spends from the sender's envelope, so the sender's RTA stays whole", () => {
+    expect(p.activityOf(f.tid("CCO2"), "2026-06")).toBe(-200000);
+    expect(p.availableOf(f.tid("CCO2"), "2026-06")).toBe(0); // 2000 assigned, 2000 spent
+    const byHh = p.readyToAssignByHousehold("2026-06");
+    // Personal: 5000 in − 2000 assigned to the envelope = 3000 assignable.
+    expect(byHh.get("Personal")).toBe(300000);
+  });
+
+  it("raises the receiving household's RTA like income, with no category needed", () => {
+    const byHh = p.readyToAssignByHousehold("2026-06");
+    expect(byHh.get("Joint")).toBe(200000);
+    expect(p.readyToAssignOf("2026-06")).toBe(500000); // households sum cleanly
+  });
+
+  it("treats leaving the budget entirely (a tracking account) the same way", () => {
+    const broker = f.account({ id: f.tid("ABRK"), name: "Broker", type: "tracking", onBudget: false, household: "Personal" });
+    const invest = f.category({ id: f.tid("CIV2"), groupId: evGrp.id, name: "Investing" });
+    const pair2 = f.tid("PAIRA");
+    const b2: LoadedBudget = {
+      ...b,
+      accounts: [...b.accounts, broker],
+      categories: [...b.categories, invest],
+      assignments: [...b.assignments, f.assignment({ id: f.tid("ASA2"), month: "2026-06", categoryId: invest.id, assigned: 100000 as Cents })],
+      transactions: [
+        ...b.transactions,
+        f.txn({ id: f.tid("TB1"), accountId: personal.id, date: "2026-06-15", amount: -100000 as Cents, categoryId: invest.id, payee: "Transfer to: Broker", transfer: { counterAccountId: broker.id, pairId: pair2 } }),
+        f.txn({ id: f.tid("TB2"), accountId: broker.id, date: "2026-06-15", amount: 100000 as Cents, payee: "Transfer from: Personal", categoryId: undefined, transfer: { counterAccountId: personal.id, pairId: pair2 } }),
+      ],
+    };
+    const p2 = computeProjection(b2);
+    // The envelope spends; Personal's RTA drops only by what was ASSIGNED.
+    expect(p2.activityOf(f.tid("CIV2"), "2026-06")).toBe(-100000);
+    expect(p2.availableOf(f.tid("CIV2"), "2026-06")).toBe(0);
+    expect(p2.readyToAssignByHousehold("2026-06").get("Personal")).toBe(200000); // 5000 − 2000 − 1000 assigned
+    // Net-worth view of the same move: money changed pockets, not size.
+    const bal = p2.accountBalances();
+    expect(bal.get(f.tid("ABRK"))).toBe(100000);
+  });
+
+  it("lets Ready to Assign itself be the funding choice — same math as blank, but chosen", () => {
+    const broker = f.account({ id: f.tid("ABR3"), name: "Broker", type: "tracking", onBudget: false, household: "Personal" });
+    const pair3 = f.tid("PAIRB");
+    const legs = (categoryId?: typeof rta.id) => [
+      f.txn({ id: f.tid("TC1"), accountId: personal.id, date: "2026-06-20", amount: -100000 as Cents, categoryId, payee: "Transfer to: Broker", transfer: { counterAccountId: broker.id, pairId: pair3 } }),
+      f.txn({ id: f.tid("TC2"), accountId: broker.id, date: "2026-06-20", amount: 100000 as Cents, categoryId: undefined, payee: "Transfer from: Personal", transfer: { counterAccountId: personal.id, pairId: pair3 } }),
+    ];
+    const project = (categoryId?: typeof rta.id) =>
+      computeProjection({ ...b, accounts: [...b.accounts, broker], transactions: [...b.transactions, ...legs(categoryId)] });
+    const chosen = project(rta.id);
+    const blank = project(undefined);
+
+    // Unassigned money funds it either way — the difference is only that one of
+    // them is a recorded decision. No envelope moves in either case.
+    expect(chosen.readyToAssignByHousehold("2026-06").get("Personal")).toBe(200000);
+    expect(blank.readyToAssignByHousehold("2026-06").get("Personal")).toBe(200000);
+    expect(chosen.activityOf(f.tid("CCO2"), "2026-06")).toBe(-200000); // the contribution envelope, untouched by this row
+  });
+});
+
 describe("credit-card auto-move", () => {
   const b = creditCardScenario();
   const p = computeProjection(b);

@@ -18,7 +18,7 @@ import {
 } from "@tabler/icons-react";
 import { newId, ops, type Cents, type Transaction, type Ulid } from "@cash-money/core";
 import { useApp } from "../../state";
-import { categoryOptions } from "../../categoryOptions";
+import { categoryOptions, incomeCategoryOptions } from "../../categoryOptions";
 import { money } from "../../format";
 import { amountColor } from "../../theme";
 import { EditorRow, type EditorSubmit } from "./EditorRow";
@@ -30,7 +30,7 @@ const todayIso = () => new Date().toISOString().slice(0, 10);
 const FREQ_LABEL: Record<string, string> = { weekly: "weekly", biweekly: "2-weekly", monthly: "monthly", yearly: "yearly" };
 
 export function TransactionsView() {
-  const { budget, projection, currency, view, accountName, categoryName, addTransaction, updateTransaction, approveTransaction, approveTransactions, deleteTransaction, deleteTransactions, setClearedStatus, setSplits } = useApp();
+  const { budget, projection, currency, view, accountName, categoryName, addTransaction, addTransfer, updateTransaction, updateTransfer, approveTransaction, approveTransactions, deleteTransaction, deleteTransactions, setClearedStatus, setSplits } = useApp();
   const [query, setQuery] = useState("");
   const [account, setAccount] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -40,19 +40,41 @@ export function TransactionsView() {
   const [schedOpen, setSchedOpen] = useState(true);
   const [payeesOpen, setPayeesOpen] = useState(false);
   const [selected, setSelected] = useState<Set<Ulid>>(new Set());
+  const [onlyUncategorized, setOnlyUncategorized] = useState(false);
 
   const single = view.kind === "account" ? (view.accountId as Ulid) : null;
   const activeAccount = single ?? (account as Ulid | null);
   const template = registerTemplate(!!single);
 
   const categoryLabel = (t: Transaction): string => {
-    if (t.transfer) return `Transfer: ${accountName(t.transfer.counterAccountId)}`;
+    // An out-of-household transfer's funded leg reads like regular spending —
+    // its envelope; only within-household (pocket-shuffle) legs say Transfer.
+    if (t.transfer) return t.categoryId ? categoryName(t.categoryId) : `Transfer: ${accountName(t.transfer.counterAccountId)}`;
     if (t.splits) return `Split (${t.splits.length})`;
     return categoryName(t.categoryId);
   };
 
+  /**
+   * An outflow with no envelope comes straight out of Ready-to-Assign. That is
+   * a legitimate thing to do — but it has to be a decision, so flag the rows
+   * that never made one. Pocket shuffles within one budget scope are exempt:
+   * they move nothing out of the pool. Picking "Ready to Assign" in the editor
+   * clears the flag while draining exactly the same.
+   */
+  const budgetScopeOf = (id: Ulid): string => {
+    const a = budget.accounts.find((x) => x.id === id);
+    if (!a) return "__unknown__";
+    return a.onBudget === false ? "__no-budget__" : a.household ?? "__no-household__";
+  };
+  const needsCategory = (t: Transaction): boolean => {
+    if (t.amount >= 0 || t.categoryId || t.splits) return false;
+    if (!budget.accounts.find((a) => a.id === t.accountId)?.onBudget) return false;
+    if (t.transfer && budgetScopeOf(t.accountId) === budgetScopeOf(t.transfer.counterAccountId)) return false;
+    return true;
+  };
+
   const payees = useMemo(
-    () => [...new Set(budget.transactions.map((t) => t.payee).filter((p) => p.trim() && !p.startsWith("Transfer :")))].sort(),
+    () => [...new Set(budget.transactions.filter((t) => !t.transfer).map((t) => t.payee).filter((p) => p.trim() && !p.startsWith("Transfer :")))].sort(),
     [budget],
   );
   const lastCatByPayee = useMemo(() => {
@@ -64,7 +86,8 @@ export function TransactionsView() {
   }, [budget]);
 
   const categoryData = categoryOptions(budget);
-  const accountData = budget.accounts.map((a) => ({ value: a.id, label: a.name }));
+  const incomeData = incomeCategoryOptions(budget);
+  const accountData = budget.accounts.map((a) => ({ value: a.id, label: a.name, household: a.household, onBudget: a.onBudget }));
 
   const cycleSort = (col: string) => setSort((s) => (s?.col !== col ? { col, dir: "asc" } : s.dir === "asc" ? { col, dir: "desc" } : null));
   const sortValue = (t: Transaction, col: string): string | number => {
@@ -84,6 +107,7 @@ export function TransactionsView() {
     const q = query.trim().toLowerCase();
     return budget.transactions
       .filter((t) => (activeAccount ? t.accountId === activeAccount : true))
+      .filter((t) => !onlyUncategorized || needsCategory(t))
       .filter((t) => {
         if (!q) return true;
         const hay = [t.payee, t.memo, categoryLabel(t), ...(t.splits?.map((s) => s.memo) ?? [])].join(" ").toLowerCase();
@@ -97,7 +121,7 @@ export function TransactionsView() {
         return sort.dir === "asc" ? cmp : -cmp;
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [budget, query, activeAccount, sort]);
+  }, [budget, query, activeAccount, sort, onlyUncategorized]);
 
   // Scheduled (unapproved) transactions are pending: they don't hit the budget
   // until approved. Surface them separately, soonest first, above the register.
@@ -121,6 +145,13 @@ export function TransactionsView() {
             .reduce((s, t) => s + t.amount, 0)
         : null,
     [budget, single],
+  );
+
+  // Rows that would silently drain Ready-to-Assign, counted for the header pill.
+  const uncategorizedCount = useMemo(
+    () => budget.transactions.filter((t) => (activeAccount ? t.accountId === activeAccount : true) && needsCategory(t)).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [budget, activeAccount],
   );
 
   // ---- Multi-select ----------------------------------------------------------
@@ -172,7 +203,24 @@ export function TransactionsView() {
     const approved = data.date <= todayIso();
     // A card swipe isn't PAID until its bill is — new credit-card entries
     // start uncleared; debit entries settle immediately and start cleared.
-    const isCard = budget.accounts.find((a) => a.id === data.accountId)?.type === "creditCard";
+    const cardOf = (id: Ulid) => budget.accounts.find((a) => a.id === id)?.type === "creditCard";
+    const isCard = cardOf(data.accountId);
+    if (data.transferAccountId) {
+      const legCleared = (id: Ulid) => (!approved || cardOf(id) ? ("uncleared" as const) : ("cleared" as const));
+      addTransfer({
+        accountId: data.accountId,
+        counterAccountId: data.transferAccountId,
+        date: data.date,
+        amount: data.amount,
+        memo: data.memo,
+        approved,
+        clearedThis: legCleared(data.accountId),
+        clearedCounter: legCleared(data.transferAccountId),
+        categoryId: data.categoryId,
+      });
+      setAdding(false);
+      return;
+    }
     const tx: Transaction = {
       id: newId(),
       accountId: data.accountId,
@@ -197,6 +245,19 @@ export function TransactionsView() {
     setAdding(false);
   };
   const saveEdit = (t: Transaction, data: EditorSubmit) => {
+    if (t.transfer) {
+      updateTransfer(t.id, {
+        accountId: data.accountId,
+        counterAccountId: data.transferAccountId ?? t.transfer.counterAccountId,
+        date: data.date,
+        amount: data.amount,
+        memo: data.memo,
+        cleared: data.cleared,
+        categoryId: data.categoryId,
+      });
+      setEditingId(null);
+      return;
+    }
     const keepEffective = t.effectiveDate !== t.date;
     updateTransaction(t.id, {
       accountId: data.accountId,
@@ -225,6 +286,18 @@ export function TransactionsView() {
           {clearedBalance !== null && clearedBalance !== balance && (
             <Tooltip label="Cleared balance — only cleared and reconciled rows; this is what the bank shows." withArrow>
               <Text size="xs" c="dimmed">cleared {money(clearedBalance, currency)}</Text>
+            </Tooltip>
+          )}
+          {uncategorizedCount > 0 && (
+            <Tooltip label={`${uncategorizedCount} outflow${uncategorizedCount === 1 ? "" : "s"} with no envelope — they come straight out of Ready to Assign. Click to see just those.`} withArrow>
+              <Badge
+                color="yellow"
+                variant={onlyUncategorized ? "filled" : "light"}
+                style={{ cursor: "pointer" }}
+                onClick={() => setOnlyUncategorized((v) => !v)}
+              >
+                {uncategorizedCount} need{uncategorizedCount === 1 ? "s" : ""} a category
+              </Badge>
             </Tooltip>
           )}
           {reconciledThrough && (
@@ -290,22 +363,22 @@ export function TransactionsView() {
           <Collapse in={schedOpen}>
             {scheduled.map((t) => {
               const due = t.date <= todayIso();
-              if (editingId === t.id && !t.splits && !t.transfer) {
+              if (editingId === t.id && !t.splits) {
                 return (
-                  <EditorRow key={t.id} single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
+                  <EditorRow key={t.id} single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} incomeData={incomeData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
                 );
               }
               return (
                 <Box
                   key={t.id}
-                  onDoubleClick={() => !t.splits && !t.transfer && setEditingId(t.id)}
+                  onDoubleClick={() => !t.splits && setEditingId(t.id)}
                   onClick={(e) => { if (e.shiftKey || e.metaKey || e.ctrlKey) rowSelect(scheduled, t.id, e); }}
                   onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
                   style={{
                     display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px",
                     borderTop: "1px solid var(--mantine-color-orange-2)",
                     background: due ? "light-dark(var(--mantine-color-orange-1), rgba(255,146,43,0.16))" : "light-dark(var(--mantine-color-orange-0), rgba(255,146,43,0.06))",
-                    cursor: !t.splits && !t.transfer ? "pointer" : "default",
+                    cursor: !t.splits ? "pointer" : "default",
                   }}
                 >
                   <Checkbox
@@ -315,7 +388,7 @@ export function TransactionsView() {
                     onClick={(e) => { e.stopPropagation(); rowSelect(scheduled, t.id, e); }}
                     aria-label="Select row"
                   />
-                  <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
+                  <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} needsCategory={needsCategory(t)} currency={currency} />
                   <Group gap={4} wrap="nowrap">
                     <StatusBadge t={t} onApprove={() => approveTransaction(t.id)} onSetCleared={(c) => updateTransaction(t.id, { cleared: c })} />
                     {t.recurrence && (
@@ -365,24 +438,24 @@ export function TransactionsView() {
       </Box>
 
       {adding && (
-        <EditorRow single={single} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} accountData={accountData} onSubmit={addFromEditor} onCancel={() => setAdding(false)} />
+        <EditorRow single={single} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} incomeData={incomeData} accountData={accountData} onSubmit={addFromEditor} onCancel={() => setAdding(false)} />
       )}
 
       <div ref={parentRef} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         <div style={{ height: virt.getTotalSize(), position: "relative" }}>
           {virt.getVirtualItems().map((vi) => {
             const t = approved[vi.index]!;
-            const editing = editingId === t.id && !t.splits && !t.transfer;
+            const editing = editingId === t.id && !t.splits;
             return (
               <div key={t.id} ref={virt.measureElement} data-index={vi.index} style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vi.start}px)` }}>
                 {editing ? (
-                  <EditorRow single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
+                  <EditorRow single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} incomeData={incomeData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
                 ) : (
                   <Box
-                    onDoubleClick={() => !t.splits && !t.transfer && setEditingId(t.id)}
+                    onDoubleClick={() => !t.splits && setEditingId(t.id)}
                     onClick={(e) => { if (e.shiftKey || e.metaKey || e.ctrlKey) rowSelect(approved, t.id, e); }}
                     onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
-                    style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--mantine-color-default-border)", cursor: !t.splits && !t.transfer ? "pointer" : "default", background: selected.has(t.id) ? "var(--mantine-color-indigo-light)" : undefined }}
+                    style={{ display: "grid", gridTemplateColumns: template, columnGap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--mantine-color-default-border)", cursor: !t.splits ? "pointer" : "default", background: selected.has(t.id) ? "var(--mantine-color-indigo-light)" : undefined }}
                   >
                     <Checkbox
                       size="xs"
@@ -391,7 +464,7 @@ export function TransactionsView() {
                       onClick={(e) => { e.stopPropagation(); rowSelect(approved, t.id, e); }}
                       aria-label="Select row"
                     />
-                    <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} currency={currency} />
+                    <TxCells t={t} single={single} accountName={accountName} categoryLabel={categoryLabel} needsCategory={needsCategory(t)} currency={currency} />
                     <Group gap={4} wrap="nowrap">
                       <StatusBadge t={t} onApprove={() => approveTransaction(t.id)} onSetCleared={(c) => updateTransaction(t.id, { cleared: c })} />
                       {t.recurrence && (
@@ -477,11 +550,12 @@ function StatusBadge({ t, onApprove, onSetCleared }: {
 }
 
 /** The shared read-only cells of one register row (scheduled and approved lists). */
-function TxCells({ t, single, accountName, categoryLabel, currency }: {
+function TxCells({ t, single, accountName, categoryLabel, needsCategory, currency }: {
   t: Transaction;
   single: Ulid | null;
   accountName: (id: Ulid) => string;
   categoryLabel: (t: Transaction) => string;
+  needsCategory: boolean;
   currency: ReturnType<typeof useApp>["currency"];
 }) {
   return (
@@ -489,7 +563,13 @@ function TxCells({ t, single, accountName, categoryLabel, currency }: {
       <Text size="sm">{t.date}</Text>
       {!single && <Text size="sm" lineClamp={1}>{accountName(t.accountId)}</Text>}
       <Text size="sm" lineClamp={1}>{t.payee}</Text>
-      <Text size="sm" lineClamp={1} c={t.transfer ? "blue" : t.splits ? "grape" : undefined}>{categoryLabel(t)}</Text>
+      {needsCategory ? (
+        <Tooltip label="No envelope — this comes straight out of Ready to Assign. Edit the row and choose one, or pick Ready to Assign to say you meant it." withArrow>
+          <Badge size="xs" color="yellow" variant="light" style={{ width: "fit-content" }}>needs a category</Badge>
+        </Tooltip>
+      ) : (
+        <Text size="sm" lineClamp={1} c={t.transfer ? "blue" : t.splits ? "grape" : undefined}>{categoryLabel(t)}</Text>
+      )}
       <Text size="sm" c="dimmed" lineClamp={1}>{t.memo}</Text>
       <Text size="sm" fw={500} ta="right" c={amountColor(t.amount)}>{money(t.amount, currency)}</Text>
     </>

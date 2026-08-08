@@ -99,6 +99,10 @@ interface Actions {
   coverShortfall: (month: MonthKey, from: Ulid, to: Ulid) => void;
   addTransaction: (tx: Transaction) => void;
   addTransactions: (txs: Transaction[]) => void;
+  /** Record money moving between two accounts (creates both linked legs). */
+  addTransfer: (args: ops.TransferArgs) => void;
+  /** Edit one transfer leg; the other mirrors (amount/date/memo/accounts). */
+  updateTransfer: (id: Ulid, patch: { accountId?: Ulid; counterAccountId?: Ulid; date?: string; amount?: Cents; memo?: string; cleared?: "cleared" | "uncleared" | "reconciled"; categoryId?: Ulid }) => void;
   setTransactions: (txs: Transaction[]) => void;
   updateTransaction: (id: Ulid, patch: Partial<Omit<Transaction, "id">>) => void;
   deleteTransaction: (id: Ulid) => void;
@@ -109,6 +113,8 @@ interface Actions {
   setClearedStatus: (ids: Ulid[], cleared: "cleared" | "uncleared" | "reconciled") => void;
   /** Rename every transaction with this exact payee. */
   renamePayee: (from: string, to: string) => void;
+  /** Link imported rows that were always two halves of one transfer. */
+  linkTransfers: (pairs: readonly { outflowId: Ulid; inflowId: Ulid }[]) => void;
   setSplits: (id: Ulid, splits: SplitLine[] | undefined, categoryIdWhenUnsplit?: Ulid) => void;
   /** Mark statement-confirmed rows reconciled and advance the account's reconciled-through date. */
   reconcileAccount: (accountId: Ulid, txIds: Ulid[], through: string) => void;
@@ -215,20 +221,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const adoptRef = useRef<(path: string, contents: string, mtimeMs: number) => void>(() => {});
   adoptRef.current = (path, contents, mtimeMs) => {
     const data = parseBudgetFile(contents); // throws on anything invalid
+    // One-time cosmetic migration: imported transfer legs get the canonical
+    // "Transfer to/from" payees. Idempotent — 0 changes on every later load.
+    const { budget: loaded, changed } = ops.normalizeTransferPayees(data.loaded);
     filePathRef.current = path;
     fileMtimeRef.current = mtimeMs;
     formatsRef.current = data.savedFormats;
     sourcesRef.current = data.importSources;
-    baseRef.current = data;
+    baseRef.current = { ...data, loaded };
     pendingRef.current = null;
     backedUpRef.current = false;
     conflictRef.current = false;
-    skipPersistRef.current = true; // this state IS the file; nothing to save back
+    skipPersistRef.current = changed === 0; // normalized rows should be saved back
     setFileConflict(false);
     setFilePath(path);
     setLoadError(null);
     setNeedsSetup(false);
-    dispatch({ type: "set", budget: data.loaded });
+    dispatch({ type: "set", budget: loaded });
   };
 
   /**
@@ -344,7 +353,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       if (!isTauri()) {
-        if (!cancelled) dispatch({ type: "set", budget: demoBudget() });
+        if (!cancelled) dispatch({ type: "set", budget: ops.normalizeTransferPayees(demoBudget()).budget });
         return;
       }
       const repo = new BudgetRepository(new TauriFileSystem());
@@ -359,7 +368,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // First run on the single-file format: migrate legacy data if present;
         // on a truly fresh machine, ask create-or-open instead of assuming.
         if (app.activeBudgetId) {
-          const loaded = await repo.loadBudget(app.activeBudgetId);
+          const loaded = ops.normalizeTransferPayees(await repo.loadBudget(app.activeBudgetId)).budget;
           formatsRef.current = await repo.loadFormats().catch(() => []);
           sourcesRef.current = await repo.loadImportSources(app.activeBudgetId).catch(() => []);
           if (!cancelled) await followNewFileRef.current(loaded);
@@ -507,6 +516,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       coverShortfall: (m, from, to) => apply((b) => ops.coverShortfall(b, m, from, to)),
       addTransaction: (tx) => apply((b) => ops.addTransaction(b, tx)),
       addTransactions: (txs) => apply((b) => ops.addTransactions(b, txs)),
+      addTransfer: (args) => apply((b) => ops.addTransfer(b, args)),
+      updateTransfer: (id, patch) => apply((b) => ops.updateTransfer(b, id, patch)),
       setTransactions: (txs) => apply((b) => ops.setTransactions(b, txs)),
       updateTransaction: (id, patch) => apply((b) => ops.updateTransaction(b, id, patch)),
       deleteTransaction: (id) => apply((b) => ops.deleteTransaction(b, id)),
@@ -515,6 +526,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       approveTransactions: (ids) => apply((b) => ops.approveTransactions(b, ids)),
       setClearedStatus: (ids, cleared) => apply((b) => ops.setClearedStatus(b, ids, cleared)),
       renamePayee: (from, to) => apply((b) => ops.renamePayee(b, from, to)),
+      linkTransfers: (pairs) => apply((b) => ops.linkTransfers(b, pairs).budget),
       setSplits: (id, splits, categoryIdWhenUnsplit) => apply((b) => ops.setSplits(b, id, splits, categoryIdWhenUnsplit)),
       reconcileAccount: (accountId, txIds, through) => apply((b) => ops.reconcileAccount(b, accountId, txIds, through)),
 

@@ -250,6 +250,94 @@ describe("transaction ops", () => {
     expect(d.transactions.find((t) => t.id === f.tid("TGRO"))).toBeUndefined();
   });
 
+  it("addTransfer creates both legs, linked and equal-and-opposite", () => {
+    const SAV = f.tid("ASAV");
+    const withSavings = { ...base(), accounts: [...base().accounts, f.account({ id: SAV, name: "Savings", type: "checking" })] };
+    const b = ops.addTransfer(withSavings, {
+      accountId: CHK, counterAccountId: SAV, date: "2026-01-20", amount: -25000 as Cents,
+      memo: "stash", approved: true, clearedThis: "cleared", clearedCounter: "uncleared",
+    });
+    const legs = b.transactions.filter((t) => t.transfer);
+    expect(legs).toHaveLength(2);
+    const [a, c] = legs[0]!.accountId === CHK ? [legs[0]!, legs[1]!] : [legs[1]!, legs[0]!];
+    expect(a).toMatchObject({ amount: -25000, payee: "Transfer to: Savings", cleared: "cleared" });
+    expect(c).toMatchObject({ accountId: SAV, amount: 25000, payee: "Transfer from: Checking", cleared: "uncleared" });
+    expect(a.transfer!.pairId).toBe(c.transfer!.pairId);
+    const p = computeProjection(b);
+    expect(p.accountBalances().get(CHK)).toBe(100000 - 20000 - 25000);
+    expect(p.accountBalances().get(SAV)).toBe(25000);
+  });
+
+  it("updateTransfer mirrors edits onto the other leg", () => {
+    const SAV = f.tid("ASAV");
+    const withSavings = { ...base(), accounts: [...base().accounts, f.account({ id: SAV, name: "Savings", type: "checking" })] };
+    let b = ops.addTransfer(withSavings, {
+      accountId: CHK, counterAccountId: SAV, date: "2026-01-20", amount: -25000 as Cents,
+      memo: "stash", approved: true, clearedThis: "cleared", clearedCounter: "uncleared",
+    });
+    const leg = b.transactions.find((t) => t.transfer && t.accountId === CHK)!;
+    b = ops.updateTransfer(b, leg.id, { amount: -30000 as Cents, date: "2026-01-21", memo: "more" });
+    const [a2, c2] = [b.transactions.find((t) => t.id === leg.id)!, b.transactions.find((t) => t.transfer && t.id !== leg.id)!];
+    expect(a2).toMatchObject({ amount: -30000, date: "2026-01-21", memo: "more" });
+    expect(c2).toMatchObject({ amount: 30000, date: "2026-01-21", memo: "more", cleared: "uncleared" });
+  });
+
+  it("a cross-household transfer carries its funding envelope on the outflow leg only", () => {
+    const SAV = f.tid("ASAV");
+    const withSavings = { ...base(), accounts: [...base().accounts, f.account({ id: SAV, name: "Savings", type: "checking" })] };
+    let b = ops.addTransfer(withSavings, {
+      accountId: CHK, counterAccountId: SAV, date: "2026-01-20", amount: -25000 as Cents,
+      memo: "", approved: true, clearedThis: "cleared", clearedCounter: "uncleared", categoryId: DIN,
+    });
+    const out = b.transactions.find((t) => t.transfer && t.amount < 0)!;
+    const inn = b.transactions.find((t) => t.transfer && t.amount > 0)!;
+    expect(out.categoryId).toBe(DIN);
+    expect(inn.categoryId).toBeUndefined();
+    // Editing the amount keeps the envelope on the outflow leg.
+    b = ops.updateTransfer(b, inn.id, { amount: 30000 as Cents });
+    expect(b.transactions.find((t) => t.id === out.id)!.categoryId).toBe(DIN);
+    expect(b.transactions.find((t) => t.id === inn.id)!.categoryId).toBeUndefined();
+    // Explicitly clearing it clears it.
+    b = ops.updateTransfer(b, out.id, { categoryId: undefined });
+    expect(b.transactions.find((t) => t.id === out.id)!.categoryId).toBeUndefined();
+  });
+
+  it("normalizeTransferPayees rewrites imported transfer payees, idempotently, leaving the rest alone", () => {
+    const SAV = f.tid("ASAV");
+    const pair = f.tid("PN1");
+    const withImported = {
+      ...base(),
+      accounts: [...base().accounts, f.account({ id: SAV, name: "Savings", type: "checking" })],
+    };
+    withImported.transactions = [
+      ...withImported.transactions,
+      f.txn({ id: f.tid("TL1"), accountId: CHK, date: "2026-01-12", amount: -5000 as Cents, payee: "Transfer : Savings", transfer: { counterAccountId: SAV, pairId: pair } }),
+      f.txn({ id: f.tid("TL2"), accountId: SAV, date: "2026-01-12", amount: 5000 as Cents, payee: "Transfer : Checking", transfer: { counterAccountId: CHK, pairId: pair } }),
+    ];
+    const { budget: b, changed } = ops.normalizeTransferPayees(withImported);
+    expect(changed).toBe(2);
+    expect(b.transactions.find((t) => t.id === f.tid("TL1"))!.payee).toBe("Transfer to: Savings");
+    expect(b.transactions.find((t) => t.id === f.tid("TL2"))!.payee).toBe("Transfer from: Checking");
+    expect(b.transactions.find((t) => t.id === f.tid("TGRO"))!.payee).toBe(withImported.transactions.find((t) => t.id === f.tid("TGRO"))!.payee);
+    const again = ops.normalizeTransferPayees(b);
+    expect(again.changed).toBe(0);
+    expect(again.budget).toBe(b); // untouched object when nothing changes
+  });
+
+  it("deleting or approving one transfer leg takes both", () => {
+    const SAV = f.tid("ASAV");
+    const withSavings = { ...base(), accounts: [...base().accounts, f.account({ id: SAV, name: "Savings", type: "checking" })] };
+    let b = ops.addTransfer(withSavings, {
+      accountId: CHK, counterAccountId: SAV, date: "2026-01-20", amount: -25000 as Cents,
+      memo: "", approved: false, clearedThis: "uncleared", clearedCounter: "uncleared",
+    });
+    const leg = b.transactions.find((t) => t.transfer)!;
+    const approved = ops.approveTransactions(b, [leg.id]);
+    expect(approved.transactions.filter((t) => t.transfer && t.approved)).toHaveLength(2);
+    b = ops.deleteTransaction(b, leg.id);
+    expect(b.transactions.some((t) => t.transfer)).toBe(false);
+  });
+
   it("reconcileAccount marks rows reconciled and never moves the through-date backwards", () => {
     const b1 = ops.reconcileAccount(base(), CHK, [f.tid("TGRO")], "2026-01-31");
     expect(b1.transactions.find((t) => t.id === f.tid("TGRO"))!.cleared).toBe("reconciled");

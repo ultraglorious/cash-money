@@ -29,3 +29,18 @@ export function categoryOptions(budget: LoadedBudget): GroupedCategoryOptions[] 
     })
     .filter((grp) => grp.items.length > 0);
 }
+
+/**
+ * The income categories — "Ready to Assign" and friends — tagged with the
+ * household they belong to. Money can legitimately come straight out of
+ * unbudgeted money instead of an envelope (funding investments, an unplanned
+ * contribution), but that should be a choice you *made*, not what happens when
+ * you leave the category blank. Offering them in the picker makes the drain
+ * explicit; it's also how you record income by hand.
+ */
+export function incomeCategoryOptions(budget: LoadedBudget): { value: string; label: string; household?: string }[] {
+  const income = new Map(budget.groups.filter((g) => g.kind === "income").map((g) => [g.id, g]));
+  return budget.categories
+    .filter((c) => income.has(c.groupId))
+    .map((c) => ({ value: c.id, label: c.name, household: income.get(c.groupId)!.household }));
+}
