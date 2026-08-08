@@ -17,6 +17,7 @@ export * from "./engine/index.js";
 export * as ops from "./ops.js";
 export { deduceInvoiceCoverage, type InvoiceCoverage } from "./invoices.js";
 export * from "./analytics.js";
+export { findTransferCandidates, type PairConfidence, type TransferCandidate } from "./transferPairing.js";
 export * from "./import/format.js";
 export { builtinFormat, builtinFormats } from "./import/formats/index.js";
 export { guessFormat, type FormatGuess } from "./import/guess.js";

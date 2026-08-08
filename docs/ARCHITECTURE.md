@@ -160,6 +160,18 @@ The one asymmetry worth remembering: **a tracking account belongs to your
 household but to no budget.** That is why moving cash to the broker asks for a
 category while moving it to your own savings does not.
 
+**Transfers hiding in imported data.** A transfer between two budgets arrives as
+two unrelated rows — an envelope spend in one export, income in the other —
+because that's how each source recorded it. `findTransferCandidates`
+(`transferPairing.ts`) turns up those pairs: equal-and-opposite, crossing a
+budget scope, close in date, each row used once, ranked by evidence rather than
+arithmetic (a same-size coincidence never counts as confident). `ops.linkTransfers`
+then links them, and the "Link transfers…" screen reviews the list before
+anything happens. This is **not** the old cross-budget stitch that was removed:
+nothing is merged or dropped, the sending leg keeps its funding envelope, and a
+test asserts every projection number is identical before and after. What changes
+is the payees and the fact that the pair no longer has to be guessed at.
+
 **Draining Ready-to-Assign is allowed, but only on purpose.** Money can leave
 the pool without an envelope — that's what happens when a categorized line
 isn't there — and sometimes that's exactly right (an unplanned contribution,

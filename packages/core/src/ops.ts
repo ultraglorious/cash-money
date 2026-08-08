@@ -313,6 +313,58 @@ export function normalizeTransferPayees(b: LoadedBudget): { budget: LoadedBudget
   return changed > 0 ? { budget: { ...b, transactions }, changed } : { budget: b, changed: 0 };
 }
 
+/**
+ * Link rows that were always two halves of one transfer — the pairs
+ * `findTransferCandidates` turns up in imported data — into real transfer pairs.
+ *
+ * Nothing is merged or deleted: both rows stay exactly where they are, for
+ * exactly the amounts they had. The outflow leg KEEPS its category, because
+ * that envelope is what funded the transfer and dropping it is precisely the
+ * mistake the old cross-budget "stitch" made (it left the sender's envelope
+ * unspent and Ready-to-Assign badly negative). The inflow leg's income category
+ * goes: money arriving from another budget lands in the cash pool and raises
+ * Ready-to-Assign on its own, and income categories are skipped by the engine
+ * either way — so every derived number is identical before and after. What
+ * changes is the payees, which become the canonical transfer text, and the fact
+ * that global analytics now recognise the pair without having to guess.
+ *
+ * Pairs whose rows have gone missing, or that already belong to a transfer, are
+ * skipped rather than treated as an error.
+ */
+export function linkTransfers(
+  b: LoadedBudget,
+  pairs: readonly { outflowId: Ulid; inflowId: Ulid }[],
+): { budget: LoadedBudget; linked: number } {
+  const byId = new Map(b.transactions.map((t) => [t.id, t]));
+  const nameOf = new Map(b.accounts.map((a) => [a.id, a.name]));
+  const patch = new Map<Ulid, Transaction>();
+
+  for (const { outflowId, inflowId } of pairs) {
+    const out = byId.get(outflowId);
+    const inn = byId.get(inflowId);
+    if (!out || !inn || out.transfer || inn.transfer) continue;
+    if (patch.has(out.id) || patch.has(inn.id)) continue;
+    const pairId = newId();
+    patch.set(out.id, {
+      ...out,
+      payee: transferPayee(out.amount, nameOf.get(inn.accountId) ?? "—"),
+      transfer: { counterAccountId: inn.accountId, pairId },
+    });
+    patch.set(inn.id, {
+      ...inn,
+      payee: transferPayee(inn.amount, nameOf.get(out.accountId) ?? "—"),
+      categoryId: undefined,
+      transfer: { counterAccountId: out.accountId, pairId },
+    });
+  }
+
+  if (patch.size === 0) return { budget: b, linked: 0 };
+  return {
+    budget: { ...b, transactions: b.transactions.map((t) => patch.get(t.id) ?? t) },
+    linked: patch.size / 2,
+  };
+}
+
 export interface TransferArgs {
   /** The account the user is entering the transfer FROM the perspective of. */
   accountId: Ulid;

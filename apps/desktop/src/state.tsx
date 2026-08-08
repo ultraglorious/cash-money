@@ -113,6 +113,8 @@ interface Actions {
   setClearedStatus: (ids: Ulid[], cleared: "cleared" | "uncleared" | "reconciled") => void;
   /** Rename every transaction with this exact payee. */
   renamePayee: (from: string, to: string) => void;
+  /** Link imported rows that were always two halves of one transfer. */
+  linkTransfers: (pairs: readonly { outflowId: Ulid; inflowId: Ulid }[]) => void;
   setSplits: (id: Ulid, splits: SplitLine[] | undefined, categoryIdWhenUnsplit?: Ulid) => void;
   /** Mark statement-confirmed rows reconciled and advance the account's reconciled-through date. */
   reconcileAccount: (accountId: Ulid, txIds: Ulid[], through: string) => void;
@@ -524,6 +526,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       approveTransactions: (ids) => apply((b) => ops.approveTransactions(b, ids)),
       setClearedStatus: (ids, cleared) => apply((b) => ops.setClearedStatus(b, ids, cleared)),
       renamePayee: (from, to) => apply((b) => ops.renamePayee(b, from, to)),
+      linkTransfers: (pairs) => apply((b) => ops.linkTransfers(b, pairs).budget),
       setSplits: (id, splits, categoryIdWhenUnsplit) => apply((b) => ops.setSplits(b, id, splits, categoryIdWhenUnsplit)),
       reconcileAccount: (accountId, txIds, through) => apply((b) => ops.reconcileAccount(b, accountId, txIds, through)),
 
