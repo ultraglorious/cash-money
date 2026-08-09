@@ -57,10 +57,10 @@ describe("assignSuggestions", () => {
     const b = threeMonths();
     b.assignments = [
       f.assignment({ id: f.tid("B1"), month: "2026-01", categoryId: GRO, assigned: 10 as Cents }),
-      f.assignment({ id: f.tid("B2"), month: "2026-02", categoryId: GRO, assigned: 11 as Cents }),
-      f.assignment({ id: f.tid("B3"), month: "2026-03", categoryId: GRO, assigned: 10 as Cents }),
+      f.assignment({ id: f.tid("B2"), month: "2026-02", categoryId: GRO, assigned: 12 as Cents }),
+      f.assignment({ id: f.tid("B3"), month: "2026-03", categoryId: GRO, assigned: 13 as Cents }),
     ];
-    expect(byKey(b, "2026-04").get("averageAssigned")!.amount).toBe(10); // 10.33 → 10
+    expect(byKey(b, "2026-04").get("averageAssigned")!.amount).toBe(12); // 11.67 → 12
   });
 
   /** Two months, so an envelope can carry something in from the first. */
@@ -111,6 +111,58 @@ describe("assignSuggestions", () => {
     const s = byKey(carried(0, 0, 5000, 0), "2026-02");
     expect(s.get("resetAssigned")!.amount).toBe(0);
     expect(s.has("resetAvailable")).toBe(false);
+  });
+
+  describe("envelopes that aren't filled every month", () => {
+    /**
+     * Travel, in miniature: funded and spent in two scattered months, nothing
+     * in between. The calendar questions all answer zero here.
+     */
+    function lumpy(): LoadedBudget {
+      const b = threeMonths();
+      b.assignments = [
+        f.assignment({ id: f.tid("L1"), month: "2025-06", categoryId: GRO, assigned: 90000 as Cents }),
+        f.assignment({ id: f.tid("L2"), month: "2025-11", categoryId: GRO, assigned: 50000 as Cents }),
+      ];
+      b.transactions = [
+        f.txn({ id: f.tid("LI"), accountId: CHK, date: "2025-01-01", amount: 900000 as Cents, categoryId: RTA, payee: "Employer" }),
+        f.txn({ id: f.tid("LJ"), accountId: CHK, date: "2025-06-14", amount: -90000 as Cents, categoryId: GRO, payee: "Airline" }),
+        f.txn({ id: f.tid("LK"), accountId: CHK, date: "2025-11-03", amount: -40000 as Cents, categoryId: GRO, payee: "Airline" }),
+      ];
+      return b;
+    }
+
+    it("answers from the months it was actually funded, when the calendar can't", () => {
+      const s = byKey(lumpy(), "2026-04");
+      // Nothing in the three months behind us, so the usual questions are silent.
+      expect(s.has("lastMonth")).toBe(false);
+      expect(s.has("averageAssigned")).toBe(false);
+      // But the envelope has a rhythm, and these read it.
+      expect(s.get("lastFunded")).toMatchObject({ amount: 50000, month: "2025-11" });
+      expect(s.get("typicalWhenFunded")).toMatchObject({ amount: 70000, months: 2 }); // (900 + 500) / 2
+      expect(s.get("spentLastTime")).toMatchObject({ amount: 40000, month: "2025-11" });
+    });
+
+    it("keeps quiet when the ordinary answers already say the same thing", () => {
+      // A category funded steadily: last time funded IS last month, so offering
+      // both would be one choice wearing two labels.
+      const s = byKey(threeMonths(), "2026-04");
+      expect(s.get("lastMonth")!.amount).toBe(30000);
+      expect(s.has("lastFunded")).toBe(false);
+    });
+
+    it("looks back further than the averages do, but not forever", () => {
+      const b = lumpy();
+      // Push the funding outside the two-year window and it drops off.
+      b.assignments = [f.assignment({ id: f.tid("L9"), month: "2023-01", categoryId: GRO, assigned: 90000 as Cents })];
+      b.transactions = [
+        ...b.transactions,
+        f.txn({ id: f.tid("LO"), accountId: CHK, date: "2023-01-05", amount: -90000 as Cents, categoryId: GRO, payee: "Airline" }),
+      ];
+      const s = byKey(b, "2026-04");
+      expect(s.has("lastFunded")).toBe(false);
+      expect(s.has("typicalWhenFunded")).toBe(false);
+    });
   });
 
   it("says nothing useful about an untouched category in a fresh budget", () => {
