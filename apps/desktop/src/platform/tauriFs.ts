@@ -68,6 +68,14 @@ export function backupBudgetFile(path: string): Promise<void> {
   return invoke<void>("backup_budget_file", { path });
 }
 
+/**
+ * Keep a dated copy before a bulk edit. Returns the snapshot's path; the app
+ * keeps the newest dozen and prunes the rest.
+ */
+export function snapshotBudgetFile(path: string, label: string): Promise<string> {
+  return invoke<string>("snapshot_budget_file", { path, label });
+}
+
 /** True when a write failure means "the file changed under us", not an IO error. */
 export function isConflictError(e: unknown): boolean {
   return String(e).includes("conflict:");

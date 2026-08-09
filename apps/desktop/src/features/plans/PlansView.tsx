@@ -48,8 +48,9 @@ import {
   IconSortAZ,
   IconSortDescendingNumbers,
   IconTrash,
+  IconWand,
 } from "@tabler/icons-react";
-import type { CategoryMonthView, GroupMonthView, Ulid } from "@cash-money/core";
+import { assignSuggestions, type AssignSuggestion, type AssignSuggestionKey, type CategoryMonthView, type GroupMonthView, type Ulid } from "@cash-money/core";
 import type { Cents } from "@cash-money/core";
 import { useApp } from "../../state";
 import { currentMonthClamped, dateToMonthKey, money, monthLabel, monthToDate } from "../../format";
@@ -533,8 +534,24 @@ function AvailableCell({ categoryId, available, candidates }: { categoryId: Ulid
   );
 }
 
+const SUGGESTION_LABEL: Record<AssignSuggestionKey, (s: AssignSuggestion) => string> = {
+  lastMonth: () => "Assigned last month",
+  spentLastMonth: () => "Spent last month",
+  averageAssigned: (s) => `Average assigned (${s.months} months)`,
+  averageSpent: (s) => `Average spent (${s.months} months)`,
+  resetAssigned: () => "Reset assigned",
+  resetAvailable: () => "Reset available",
+};
+
+/** The resets read as amounts on their own; say what they'll do instead. */
+const SUGGESTION_HINT: Partial<Record<AssignSuggestionKey, string>> = {
+  resetAssigned: "take back what you assigned this month",
+  resetAvailable: "empty the envelope, to zero",
+};
+
 function AssignedCell({ categoryId, value }: { categoryId: Ulid; value: number }) {
-  const { month, setAssigned, currency } = useApp();
+  const { month, setAssigned, currency, projection } = useApp();
+  const suggestions = assignSuggestions(projection, categoryId, month);
   // Edits live in a local draft and commit on blur/Enter — dispatching per
   // keystroke would recompute the whole projection (and persist intermediate
   // values like the "1" of "1250") on every keypress.
@@ -545,13 +562,40 @@ function AssignedCell({ categoryId, value }: { categoryId: Ulid; value: number }
     if (cents !== value) setAssigned(month, categoryId, cents);
   };
   return (
-    <NumberInput
-      size="xs" variant="filled" prefix={currency.symbol} decimalScale={2} fixedDecimalScale hideControls thousandSeparator=","
-      styles={{ input: { textAlign: "right" } }}
-      value={draft}
-      onChange={setDraft}
-      onBlur={commit}
-      onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
-    />
+    <Group gap={2} wrap="nowrap">
+      <NumberInput
+        size="xs" variant="filled" prefix={currency.symbol} decimalScale={2} fixedDecimalScale hideControls thousandSeparator=","
+        styles={{ input: { textAlign: "right" } }}
+        style={{ flex: 1 }}
+        value={draft}
+        onChange={setDraft}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
+      />
+      {suggestions.length > 0 && (
+        <Menu position="bottom-end" withinPortal>
+          <Menu.Target>
+            <Tooltip label="Fill from what you already did" withArrow openDelay={400}>
+              <ActionIcon variant="subtle" color="gray" size="sm" aria-label="Quick assign">
+                <IconWand size={14} />
+              </ActionIcon>
+            </Tooltip>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Label>Quick assign</Menu.Label>
+            {suggestions.map((s) => (
+              <Menu.Item
+                key={s.key}
+                rightSection={<Text size="xs" c="dimmed" ml="md">{money(s.amount, currency)}</Text>}
+                onClick={() => { setDraft(s.amount / 100); if (s.amount !== value) setAssigned(month, categoryId, s.amount); }}
+              >
+                {SUGGESTION_LABEL[s.key](s)}
+                {SUGGESTION_HINT[s.key] && <Text size="xs" c="dimmed">{SUGGESTION_HINT[s.key]}</Text>}
+              </Menu.Item>
+            ))}
+          </Menu.Dropdown>
+        </Menu>
+      )}
+    </Group>
   );
 }

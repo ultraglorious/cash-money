@@ -241,6 +241,52 @@ pub fn backup_budget_file(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Keep a dated copy of the budget before an edit that touches many rows at
+/// once, so a bulk mistake is always recoverable.
+///
+/// The rolling `.bak` sibling is written once per session, which makes it a
+/// snapshot of whenever the app happened to open — no use at all if the bulk
+/// edit came later in the same session. These are per-operation, labelled, and
+/// live in the app data dir rather than beside the budget so a synced folder
+/// stays tidy. The newest `SNAPSHOT_KEEP` survive; older ones are pruned.
+const SNAPSHOT_KEEP: usize = 12;
+
+#[tauri::command]
+pub fn snapshot_budget_file(app: AppHandle, path: String, label: String) -> Result<String, String> {
+    let p = check_budget_path(&path)?;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("snapshots");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("budget");
+    let slug: String = label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis();
+    let dest = dir.join(format!("{stem}-{stamp}-{slug}.{BUDGET_EXT}"));
+    fs::copy(&p, &dest).map_err(|e| e.to_string())?;
+
+    // Prune oldest first. A failure here must not fail the snapshot itself.
+    if let Ok(entries) = fs::read_dir(&dir) {
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(BUDGET_EXT))
+            .collect();
+        files.sort();
+        while files.len() > SNAPSHOT_KEEP {
+            let _ = fs::remove_file(files.remove(0));
+        }
+    }
+    Ok(dest.to_string_lossy().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::rel_is_safe;

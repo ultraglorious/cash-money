@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as ops from "./ops.js";
+import { fingerprint } from "./ids.js";
 import { computeProjection } from "./engine/compute.js";
 import * as f from "../test/fixtures/factories.js";
 import type { Cents } from "./money.js";
@@ -384,5 +385,75 @@ describe("transaction ops", () => {
     const tx2 = unsplit.transactions.find((t) => t.id === f.tid("TGRO"))!;
     expect(tx2.splits).toBeUndefined();
     expect(tx2.categoryId).toBe(GRO);
+  });
+});
+
+describe("ops that had no test until something depended on them", () => {
+  it("scheduledSuccessor advances the date, resets approval and mints fresh ids", () => {
+    const monthly = f.txn({
+      id: f.tid("TREC"), accountId: CHK, date: "2026-01-31", amount: -4000 as Cents, categoryId: DIN,
+      payee: "Gym", cleared: "cleared", recurrence: { freq: "monthly", anchorDay: 31 },
+      source: {
+        sourceBudget: "x",
+        naturalKey: fingerprint(["gym"]),
+        identity: fingerprint(["gym", "2026-01-31"]),
+        occurrenceIndex: 0,
+        firstSeenExportTs: "2026-01-31",
+        lastSeenExportTs: "2026-01-31",
+      },
+    });
+    const next = ops.scheduledSuccessor(monthly)!;
+    expect(next.date).toBe("2026-02-28"); // short months clamp, honouring the anchor
+    expect(next.effectiveDate).toBe(next.date);
+    expect(next.approved).toBe(false);
+    expect(next.cleared).toBe("uncleared");
+    expect(next.id).not.toBe(monthly.id);
+    expect(next.payee).toBe("Gym");
+    expect(next.recurrence).toEqual(monthly.recurrence); // it keeps repeating
+    // Import provenance belongs to the row that was imported, not to its child:
+    // inheriting it would make the successor look like a duplicate of the original.
+    expect(next.source).toBeUndefined();
+
+    // A March successor picks the anchor back up rather than staying at the 28th.
+    expect(ops.scheduledSuccessor(next)!.date).toBe("2026-03-31");
+    expect(ops.scheduledSuccessor({ ...monthly, recurrence: undefined })).toBeNull();
+  });
+
+  it("scheduledSuccessor gives a split successor its own split ids", () => {
+    const split = f.txn({
+      id: f.tid("TSPL"), accountId: CHK, date: "2026-01-05", amount: -10000 as Cents, categoryId: undefined,
+      recurrence: { freq: "weekly" },
+      splits: [
+        { id: f.tid("S1"), categoryId: GRO, amount: -6000 as Cents, memo: "" },
+        { id: f.tid("S2"), categoryId: DIN, amount: -4000 as Cents, memo: "" },
+      ],
+    });
+    const next = ops.scheduledSuccessor(split)!;
+    expect(next.date).toBe("2026-01-12");
+    expect(next.splits!.map((s) => s.id)).not.toEqual(split.splits!.map((s) => s.id));
+    expect(next.splits!.map((s) => s.amount)).toEqual([-6000, -4000]);
+  });
+
+  it("addTransactions and setTransactions add and replace wholesale", () => {
+    const extra = [
+      f.txn({ id: f.tid("TX1"), accountId: CHK, date: "2026-01-20", amount: -1000 as Cents, categoryId: DIN }),
+      f.txn({ id: f.tid("TX2"), accountId: CHK, date: "2026-01-21", amount: -2000 as Cents, categoryId: DIN }),
+    ];
+    const added = ops.addTransactions(base(), extra);
+    expect(added.transactions).toHaveLength(4);
+    expect(computeProjection(added).activityOf(DIN, M)).toBe(-3000);
+
+    const replaced = ops.setTransactions(added, extra);
+    expect(replaced.transactions).toEqual(extra);
+    expect(computeProjection(replaced).activityOf(GRO, M)).toBe(0); // the old rows are gone
+
+    expect(ops.addTransactions(base(), []).transactions).toHaveLength(2);
+  });
+
+  it("setHouseholdOrder records the display order without touching anything else", () => {
+    const b = ops.setHouseholdOrder(base(), ["Joint", "Personal"]);
+    expect(b.budget.householdOrder).toEqual(["Joint", "Personal"]);
+    expect(b.transactions).toEqual(base().transactions);
+    expect(ops.setHouseholdOrder(b, []).budget.householdOrder).toEqual([]);
   });
 });
