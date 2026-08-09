@@ -21,11 +21,14 @@ import {
   TextInput,
   Title,
 } from "@mantine/core";
+import { useDisclosure } from "@mantine/hooks";
+import { notifications } from "@mantine/notifications";
 import { IconAlertTriangle, IconFileImport, IconTrash } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   buildStatementTransactions,
   deduceInvoiceCoverage,
+  findTransferCandidates,
   formatFitsHeaders,
   guessFormat,
   mergeImport,
@@ -44,6 +47,7 @@ import {
   type Ulid,
 } from "@cash-money/core";
 import { useApp } from "../../state";
+import { LinkTransfersModal } from "../transactions/LinkTransfersModal";
 import { categoryOptions } from "../../categoryOptions";
 import { money } from "../../format";
 import { isTauri, readTextAbs, readZipCsvs } from "../../platform/tauriFs";
@@ -57,6 +61,8 @@ import {
   type MappingState,
 } from "./FormatMappingForm";
 
+const IMPORT_LINK_NOTIFICATION = "import-link-transfers";
+
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "src";
 const today = () => new Date().toISOString().slice(0, 10);
 function parseAsOf(name: string): string {
@@ -66,14 +72,51 @@ function parseAsOf(name: string): string {
 
 /** One wizard for both import kinds: full budget exports and bank statements. */
 export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: () => void }) {
+  const app = useApp();
   const [mode, setMode] = useState<"export" | "statement">("export");
   const [resetSeq, setResetSeq] = useState(0);
+  const [linkOpen, linkCtrl] = useDisclosure(false);
+  // An import is exactly when the other half of a transfer arrives, so it is
+  // the moment to offer linking — not a sidebar entry visited weeks later.
+  // The check waits for the budget to actually carry the imported rows.
+  const [checkForPairs, setCheckForPairs] = useState(false);
   const close = () => {
     setResetSeq((n) => n + 1); // remount panes so nothing leaks between sessions
     onClose();
   };
+  const done = () => {
+    setCheckForPairs(true);
+    close();
+  };
+
+  useEffect(() => {
+    if (!checkForPairs) return;
+    setCheckForPairs(false);
+    const found = findTransferCandidates(app.budget);
+    if (found.length === 0) return;
+    const confident = found.filter((c) => c.confidence === "high").length;
+    notifications.show({
+      id: IMPORT_LINK_NOTIFICATION,
+      color: "blue",
+      autoClose: false,
+      title: `${found.length} possible transfer${found.length === 1 ? "" : "s"} to link`,
+      message: (
+        <Group gap="xs" align="center">
+          <Text size="sm">
+            {confident > 0
+              ? `${confident} look confident — money moved between your own accounts, recorded twice.`
+              : "None are confident, so they're worth a look before anything happens."}
+          </Text>
+          <Button size="compact-xs" variant="light" onClick={() => { notifications.hide(IMPORT_LINK_NOTIFICATION); linkCtrl.open(); }}>
+            Review
+          </Button>
+        </Group>
+      ),
+    });
+  }, [checkForPairs, app.budget, linkCtrl]);
 
   return (
+    <>
     <Modal opened={opened} onClose={close} title="Import" size="xl" centered>
       <Stack>
         {!isTauri() && (
@@ -89,9 +132,12 @@ export function ImportWizard({ opened, onClose }: { opened: boolean; onClose: ()
           value={mode}
           onChange={(v) => setMode(v as typeof mode)}
         />
-        {mode === "export" ? <ExportPane key={`e${resetSeq}`} onDone={close} /> : <StatementPane key={`s${resetSeq}`} onDone={close} />}
+        {mode === "export" ? <ExportPane key={`e${resetSeq}`} onDone={done} /> : <StatementPane key={`s${resetSeq}`} onDone={done} />}
       </Stack>
     </Modal>
+    {/* A sibling, not a child: the wizard is closed by the time this opens. */}
+    <LinkTransfersModal opened={linkOpen} onClose={linkCtrl.close} />
+    </>
   );
 }
 
