@@ -1,4 +1,4 @@
-name: CI
+name: Checks
 
 on:
   push:
@@ -6,30 +6,41 @@ on:
   pull_request:
 
 jobs:
-  check:
+  budget-logic:
+    name: Budget logic
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out the code
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      # `npm ci` also fails when package.json and the lockfile disagree, which
-      # is worth catching on its own.
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
+      # `npm ci` refuses to install when package.json and the lockfile disagree,
+      # which is a real failure of its own — a fresh clone wouldn't build.
+      - name: Install dependencies (and confirm the lockfile is in step)
+        run: npm ci
+      - name: Check types across the core and the desktop app
+        run: npm run typecheck
+      - name: Run the money and import tests
+        run: npm test
 
-  # The Rust shell is 300 lines of file plumbing whose tests are pure path
-  # logic, but building it needs the whole webkit/gtk toolchain — so compile
-  # and test the crate alone rather than the Tauri bundle.
-  rust:
+  native-shell:
+    name: Native shell (file access)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Check out the code
+        uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Restore the Rust build cache
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+      # The shell is 300 lines of file plumbing whose tests are pure path logic,
+      # but the crate won't compile without the desktop webview libraries.
+      - name: Install the Linux webview libraries
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Test the file-access commands
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
