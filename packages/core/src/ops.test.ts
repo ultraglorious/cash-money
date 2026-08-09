@@ -457,3 +457,74 @@ describe("ops that had no test until something depended on them", () => {
     expect(ops.setHouseholdOrder(b, []).budget.householdOrder).toEqual([]);
   });
 });
+
+describe("repeating transfers", () => {
+  const SAV = f.tid("ASAV");
+  function withSavings(): LoadedBudget {
+    const b = base();
+    return { ...b, accounts: [...b.accounts, f.account({ id: SAV, name: "Savings", type: "checking" })] };
+  }
+  const monthly = { freq: "monthly" as const, anchorDay: 15 };
+
+  it("carries the cadence onto both legs, and schedules the next pair when it already happened", () => {
+    const b = ops.addTransfer(withSavings(), {
+      accountId: CHK, counterAccountId: SAV, date: "2026-01-15", amount: -25000 as Cents,
+      memo: "", approved: true, clearedThis: "cleared", clearedCounter: "cleared", recurrence: monthly,
+    });
+    const now = b.transactions.filter((t) => t.date === "2026-01-15");
+    expect(now).toHaveLength(2);
+    expect(now.every((t) => t.recurrence?.freq === "monthly")).toBe(true);
+
+    // Both halves of February are there, linked to each other and to nothing else.
+    const next = b.transactions.filter((t) => t.date === "2026-02-15");
+    expect(next).toHaveLength(2);
+    expect(next[0]!.transfer!.pairId).toBe(next[1]!.transfer!.pairId);
+    expect(next[0]!.transfer!.pairId).not.toBe(now[0]!.transfer!.pairId);
+    expect(next.map((t) => t.amount).sort((x, y) => x - y)).toEqual([-25000, 25000]);
+    expect(next.every((t) => !t.approved && t.cleared === "uncleared")).toBe(true);
+  });
+
+  it("approving a scheduled pair spawns the next one, still paired", () => {
+    const scheduled = ops.addTransfer(withSavings(), {
+      accountId: CHK, counterAccountId: SAV, date: "2026-03-15", amount: -25000 as Cents,
+      memo: "", approved: false, clearedThis: "uncleared", clearedCounter: "uncleared", recurrence: monthly,
+    });
+    expect(scheduled.transactions.filter((t) => t.transfer)).toHaveLength(2); // nothing scheduled ahead yet
+
+    const leg = scheduled.transactions.find((t) => t.accountId === CHK && t.transfer)!;
+    const approved = ops.approveTransactions(scheduled, [leg.id]);
+
+    const april = approved.transactions.filter((t) => t.date === "2026-04-15");
+    expect(april).toHaveLength(2);
+    expect(april[0]!.transfer!.pairId).toBe(april[1]!.transfer!.pairId);
+    // …and the pair that spawned them is approved, both halves of it.
+    expect(approved.transactions.filter((t) => t.date === "2026-03-15").every((t) => t.approved)).toBe(true);
+    // Each account nets zero across the scheduled pair: it is still a transfer.
+    expect(april.reduce((s, t) => s + t.amount, 0)).toBe(0);
+  });
+
+  it("leaves a half-linked leg unpaired rather than inventing a partner", () => {
+    // A lone leg (a damaged import) must not spawn a successor pointing at nothing.
+    const b = withSavings();
+    const lone = f.txn({
+      id: f.tid("TLON"), accountId: CHK, date: "2026-01-15", amount: -25000 as Cents, categoryId: undefined,
+      approved: false, recurrence: monthly, transfer: { counterAccountId: SAV, pairId: f.tid("PLON") },
+    });
+    const approved = ops.approveTransactions(ops.addTransaction(b, lone), [lone.id]);
+    const next = approved.transactions.find((t) => t.date === "2026-02-15")!;
+    expect(next.transfer).toBeUndefined();
+  });
+
+  it("mirrors a cadence change onto the other leg", () => {
+    const b = ops.addTransfer(withSavings(), {
+      accountId: CHK, counterAccountId: SAV, date: "2026-01-15", amount: -25000 as Cents,
+      memo: "", approved: false, clearedThis: "uncleared", clearedCounter: "uncleared",
+    });
+    const leg = b.transactions.find((t) => t.accountId === CHK && t.transfer)!;
+    const weekly = ops.updateTransfer(b, leg.id, { recurrence: { freq: "weekly" } });
+    expect(weekly.transactions.filter((t) => t.transfer).every((t) => t.recurrence?.freq === "weekly")).toBe(true);
+
+    const stopped = ops.updateTransfer(weekly, leg.id, { recurrence: undefined });
+    expect(stopped.transactions.filter((t) => t.transfer).every((t) => t.recurrence === undefined)).toBe(true);
+  });
+});

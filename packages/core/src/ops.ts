@@ -391,13 +391,21 @@ export interface TransferArgs {
    * rises through the cash pool. Same-pool transfers leave this unset.
    */
   categoryId?: Ulid;
+  /** Present => the transfer repeats; both legs carry it, so either can spawn. */
+  recurrence?: Transaction["recurrence"];
 }
 
 /** Record money moving between two accounts: both legs, linked by a pair id. */
 export function addTransfer(b: LoadedBudget, args: TransferArgs): LoadedBudget {
   const nameOf = (id: Ulid): string => b.accounts.find((a) => a.id === id)?.name ?? "—";
   const pairId = newId();
-  const common = { date: args.date, effectiveDate: args.date, memo: args.memo, approved: args.approved };
+  const common = {
+    date: args.date,
+    effectiveDate: args.date,
+    memo: args.memo,
+    approved: args.approved,
+    ...(args.recurrence ? { recurrence: args.recurrence } : {}),
+  };
   const legA: Transaction = {
     id: newId(),
     accountId: args.accountId,
@@ -418,6 +426,16 @@ export function addTransfer(b: LoadedBudget, args: TransferArgs): LoadedBudget {
     ...(args.categoryId && args.amount > 0 ? { categoryId: args.categoryId } : {}),
     transfer: { counterAccountId: args.accountId, pairId },
   };
+  // Entered as already-happened and repeating? Then the next occurrence belongs
+  // in the schedule now — the same courtesy a plain repeating row gets, except
+  // both legs have to land together, linked to each other.
+  if (args.approved && args.recurrence) {
+    const nextPairId = newId();
+    const next = [legA, legB]
+      .map((leg) => scheduledSuccessor(leg, { pairId: nextPairId }))
+      .filter((t): t is Transaction => t !== null);
+    return addTransactions(b, [legA, legB, ...next]);
+  }
   return addTransactions(b, [legA, legB]);
 }
 
@@ -430,7 +448,7 @@ export function addTransfer(b: LoadedBudget, args: TransferArgs): LoadedBudget {
 export function updateTransfer(
   b: LoadedBudget,
   txId: Ulid,
-  patch: { accountId?: Ulid; counterAccountId?: Ulid; date?: ISODate; amount?: Cents; memo?: string; cleared?: ClearedStatus; categoryId?: Ulid },
+  patch: { accountId?: Ulid; counterAccountId?: Ulid; date?: ISODate; amount?: Cents; memo?: string; cleared?: ClearedStatus; categoryId?: Ulid; recurrence?: Transaction["recurrence"] },
 ): LoadedBudget {
   const t = b.transactions.find((x) => x.id === txId);
   if (!t?.transfer) return b;
@@ -445,6 +463,9 @@ export function updateTransfer(
   // The funding envelope lives on whichever leg the money LEAVES.
   const other = otherId ? b.transactions.find((x) => x.id === otherId) : undefined;
   const categoryId = "categoryId" in patch ? patch.categoryId : t.categoryId ?? other?.categoryId;
+  // A cadence belongs to the pair, not to a leg, so it is mirrored like the date.
+  const recurrence = "recurrence" in patch ? patch.recurrence : t.recurrence;
+  const cadence = recurrence ? { recurrence } : { recurrence: undefined };
 
   const transactions = b.transactions.map((x) => {
     if (x.id === txId) {
@@ -458,6 +479,7 @@ export function updateTransfer(
         payee: transferPayee(amount, nameOf(counterAccountId)),
         cleared: patch.cleared ?? x.cleared,
         categoryId: amount < 0 ? categoryId : undefined,
+        ...cadence,
         transfer: { ...x.transfer!, counterAccountId },
       };
     }
@@ -471,6 +493,7 @@ export function updateTransfer(
         memo,
         payee: transferPayee(-amount, nameOf(accountId)),
         categoryId: -amount < 0 ? categoryId : undefined,
+        ...cadence,
         transfer: { ...x.transfer!, counterAccountId: accountId },
       };
     }
@@ -487,10 +510,16 @@ export function deleteTransaction(b: LoadedBudget, txId: Ulid): LoadedBudget {
 
 /**
  * The next occurrence of a repeating transaction: a fresh scheduled entry one
- * period later. Identity, provenance, and transfer pairing belong to the
- * original row only, so none of them carry over; split lines get new ids.
+ * period later. Identity and provenance belong to the original row only, so
+ * neither carries over; split lines get new ids.
+ *
+ * A transfer is two rows, and a successor that kept the original's pair id
+ * would join the pair it came from rather than start a new one. So the link is
+ * dropped unless the caller supplies a fresh `pairId` — which
+ * `approveTransactions` does, once per pair, so both legs land linked to each
+ * other and to nothing else.
  */
-export function scheduledSuccessor(t: Transaction): Transaction | null {
+export function scheduledSuccessor(t: Transaction, opts: { pairId?: Ulid } = {}): Transaction | null {
   if (!t.recurrence) return null;
   const date = nextOccurrence(t.date, t.recurrence.freq, t.recurrence.anchorDay);
   const { id: _id, source: _source, transfer: _transfer, ...rest } = t;
@@ -502,6 +531,9 @@ export function scheduledSuccessor(t: Transaction): Transaction | null {
     approved: false,
     cleared: "uncleared",
     ...(t.splits ? { splits: t.splits.map((s) => ({ ...s, id: newId() })) } : {}),
+    ...(opts.pairId && t.transfer
+      ? { transfer: { counterAccountId: t.transfer.counterAccountId, pairId: opts.pairId } }
+      : {}),
   };
 }
 
@@ -519,10 +551,24 @@ export function approveTransaction(b: LoadedBudget, txId: Ulid): LoadedBudget {
 export function approveTransactions(b: LoadedBudget, txIds: readonly Ulid[]): LoadedBudget {
   // A transfer pair approves as one: a half-approved pair would unbalance accounts.
   const ids = new Set(txIds.flatMap((id) => pairIds(b, id)));
+
+  // Both legs of a repeating transfer spawn, and they must spawn INTO each
+  // other: one fresh pair id per pair being approved. A pair with only one leg
+  // in hand (a half-linked row from an import) gets no link rather than a
+  // successor pointing at nothing.
+  const legsPerPair = new Map<Ulid, number>();
+  for (const t of b.transactions) {
+    if (!ids.has(t.id) || t.approved || !t.transfer) continue;
+    legsPerPair.set(t.transfer.pairId, (legsPerPair.get(t.transfer.pairId) ?? 0) + 1);
+  }
+  const successorPairIds = new Map<Ulid, Ulid>();
+  for (const [pairId, legs] of legsPerPair) if (legs === 2) successorPairIds.set(pairId, newId());
+
   const successors: Transaction[] = [];
   const transactions = b.transactions.map((t) => {
     if (!ids.has(t.id) || t.approved) return t;
-    const next = scheduledSuccessor(t);
+    const pairId = t.transfer ? successorPairIds.get(t.transfer.pairId) : undefined;
+    const next = scheduledSuccessor(t, { ...(pairId ? { pairId } : {}) });
     if (next) successors.push(next);
     return { ...t, approved: true, cleared: "uncleared" as const };
   });

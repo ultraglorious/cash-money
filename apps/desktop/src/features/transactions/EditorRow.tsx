@@ -132,9 +132,7 @@ export function EditorRow({
     if (!valid || !accountId || !date) return;
     const iso = toIso(date);
     const recurrence =
-      repeat === REPEAT_NONE || transferTo
-        ? undefined
-        : { freq: repeat as RecurrenceFreq, anchorDay: Number(iso.slice(8, 10)) };
+      repeat === REPEAT_NONE ? undefined : { freq: repeat as RecurrenceFreq, anchorDay: Number(iso.slice(8, 10)) };
     const base = { accountId: accountId as Ulid, date: iso, payee: payee.trim(), memo: memo.trim(), cleared: initial?.cleared ?? "cleared", recurrence };
     if (transferTo)
       onSubmit({
@@ -258,10 +256,9 @@ export function EditorRow({
       <Select
         size="xs"
         data={REPEAT_OPTIONS}
-        value={transferTo ? REPEAT_NONE : repeat}
+        value={repeat}
         onChange={(v) => setRepeat(v ?? REPEAT_NONE)}
         allowDeselect={false}
-        disabled={!!transferTo}
         comboboxProps={{ withinPortal: true }}
         aria-label="Repeat"
       />
