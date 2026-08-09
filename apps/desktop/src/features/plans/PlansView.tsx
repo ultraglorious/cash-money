@@ -539,7 +539,14 @@ const SUGGESTION_LABEL: Record<AssignSuggestionKey, (s: AssignSuggestion) => str
   spentLastMonth: () => "Spent last month",
   averageAssigned: (s) => `Average assigned (${s.months} months)`,
   averageSpent: (s) => `Average spent (${s.months} months)`,
-  zeroOut: () => "Leave nothing in the envelope",
+  resetAssigned: () => "Reset assigned",
+  resetAvailable: () => "Reset available",
+};
+
+/** The resets read as amounts on their own; say what they'll do instead. */
+const SUGGESTION_HINT: Partial<Record<AssignSuggestionKey, string>> = {
+  resetAssigned: "take back what you assigned this month",
+  resetAvailable: "empty the envelope, to zero",
 };
 
 function AssignedCell({ categoryId, value }: { categoryId: Ulid; value: number }) {
@@ -583,6 +590,7 @@ function AssignedCell({ categoryId, value }: { categoryId: Ulid; value: number }
                 onClick={() => { setDraft(s.amount / 100); if (s.amount !== value) setAssigned(month, categoryId, s.amount); }}
               >
                 {SUGGESTION_LABEL[s.key](s)}
+                {SUGGESTION_HINT[s.key] && <Text size="xs" c="dimmed">{SUGGESTION_HINT[s.key]}</Text>}
               </Menu.Item>
             ))}
           </Menu.Dropdown>

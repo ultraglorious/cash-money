@@ -17,7 +17,15 @@ import { addMonths } from "./time.js";
  * one straight to `ops.setAssigned`. Only months the budget actually covers are
  * averaged, so a three-month average in a two-month-old budget says two.
  */
-export type AssignSuggestionKey = "lastMonth" | "spentLastMonth" | "averageAssigned" | "averageSpent" | "zeroOut";
+export type AssignSuggestionKey =
+  | "lastMonth"
+  | "spentLastMonth"
+  | "averageAssigned"
+  | "averageSpent"
+  /** Take back this month's assignment: assigned → 0. */
+  | "resetAssigned"
+  /** Land the envelope on empty: assigned → assigned − available. */
+  | "resetAvailable";
 
 export interface AssignSuggestion {
   key: AssignSuggestionKey;
@@ -64,10 +72,23 @@ export function assignSuggestions(
     push("averageSpent", mean((m) => spentIn(p, categoryId, m)), history.length);
   }
 
-  // Landing on zero is the one suggestion that stays useful at 0 — that's
-  // "take it all back" — so it's offered whenever it would actually move.
+  // The two resets. Both stay useful at an amount of 0 — that IS the point of
+  // them — so they're offered whenever they would actually move something.
+  //
+  //  - resetAssigned takes back what you put in this month, leaving whatever
+  //    carried in from last month alone.
+  //  - resetAvailable empties the envelope: it covers an overspend, or claws a
+  //    surplus back to Ready-to-Assign, which needs a NEGATIVE assignment when
+  //    the surplus came from an earlier month.
+  //
+  // When nothing has carried in and nothing has been spent they are the same
+  // action, so only one of them is worth showing.
+  const assigned = p.assignedOf(categoryId, month);
   const available = p.availableOf(categoryId, month);
-  if (available !== 0) out.push({ key: "zeroOut", amount: (p.assignedOf(categoryId, month) - available) as Cents });
+  if (assigned !== 0) out.push({ key: "resetAssigned", amount: 0 as Cents });
+  if (available !== 0 && available !== assigned) {
+    out.push({ key: "resetAvailable", amount: (assigned - available) as Cents });
+  }
 
   return out;
 }

@@ -63,17 +63,54 @@ describe("assignSuggestions", () => {
     expect(byKey(b, "2026-04").get("averageAssigned")!.amount).toBe(10); // 10.33 → 10
   });
 
-  it("proposes the amount that lands the envelope exactly on zero", () => {
-    // March: 300 assigned, nothing spent, 250 carried in from February.
-    const s = byKey(threeMonths(), "2026-03");
-    const p = computeProjection(threeMonths());
-    const zero = s.get("zeroOut")!;
-    expect(zero.amount).toBe(p.assignedOf(GRO, "2026-03") - p.availableOf(GRO, "2026-03"));
-
-    // Applying it would leave nothing in the envelope.
+  /** Two months, so an envelope can carry something in from the first. */
+  function carried(janAssigned: number, janSpent: number, febAssigned: number, febSpent: number): LoadedBudget {
     const b = threeMonths();
-    b.assignments = b.assignments.map((a) => (a.month === "2026-03" ? { ...a, assigned: zero.amount } : a));
-    expect(computeProjection(b).availableOf(GRO, "2026-03")).toBe(0);
+    b.assignments = [
+      f.assignment({ id: f.tid("C1"), month: "2026-01", categoryId: GRO, assigned: janAssigned as Cents }),
+      f.assignment({ id: f.tid("C2"), month: "2026-02", categoryId: GRO, assigned: febAssigned as Cents }),
+    ];
+    b.transactions = [
+      b.transactions[0]!, // the income row, so the months exist
+      f.txn({ id: f.tid("CJ"), accountId: CHK, date: "2026-01-15", amount: -janSpent as Cents, categoryId: GRO, payee: "Market" }),
+      f.txn({ id: f.tid("CF"), accountId: CHK, date: "2026-02-15", amount: -febSpent as Cents, categoryId: GRO, payee: "Market" }),
+    ];
+    return b;
+  }
+
+  it("resetAssigned takes back this month's assignment, leaving what carried in", () => {
+    // January leaves 100 in the envelope; February adds 50 more.
+    const b = carried(10000, 0, 5000, 0);
+    expect(byKey(b, "2026-02").get("resetAssigned")!.amount).toBe(0);
+
+    b.assignments = b.assignments.filter((a) => a.month !== "2026-02");
+    expect(computeProjection(b).availableOf(GRO, "2026-02")).toBe(10000); // January's 100 survives
+  });
+
+  it("resetAvailable empties the envelope, clawing a carried surplus back", () => {
+    const b = carried(10000, 0, 5000, 0);
+    const reset = byKey(b, "2026-02").get("resetAvailable")!;
+    expect(reset.amount).toBe(-10000); // a negative assignment hands the 100 back
+
+    b.assignments = b.assignments.map((a) => (a.month === "2026-02" ? { ...a, assigned: reset.amount } : a));
+    expect(computeProjection(b).availableOf(GRO, "2026-02")).toBe(0);
+  });
+
+  it("resetAvailable covers an overspend with a positive assignment", () => {
+    const b = carried(0, 0, 5000, 20000); // 50 assigned against 200 spent
+    const reset = byKey(b, "2026-02").get("resetAvailable")!;
+    expect(reset.amount).toBe(20000); // assign the full 200
+
+    b.assignments = b.assignments.map((a) => (a.month === "2026-02" ? { ...a, assigned: reset.amount } : a));
+    expect(computeProjection(b).availableOf(GRO, "2026-02")).toBe(0);
+  });
+
+  it("offers only one reset when the two would do the same thing", () => {
+    // Nothing carried in and nothing spent: emptying the envelope IS taking the
+    // assignment back, so there is one option rather than two identical ones.
+    const s = byKey(carried(0, 0, 5000, 0), "2026-02");
+    expect(s.get("resetAssigned")!.amount).toBe(0);
+    expect(s.has("resetAvailable")).toBe(false);
   });
 
   it("says nothing useful about an untouched category in a fresh budget", () => {

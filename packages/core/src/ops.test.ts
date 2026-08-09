@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as ops from "./ops.js";
+import { fingerprint } from "./ids.js";
 import { computeProjection } from "./engine/compute.js";
 import * as f from "../test/fixtures/factories.js";
 import type { Cents } from "./money.js";
@@ -392,7 +393,14 @@ describe("ops that had no test until something depended on them", () => {
     const monthly = f.txn({
       id: f.tid("TREC"), accountId: CHK, date: "2026-01-31", amount: -4000 as Cents, categoryId: DIN,
       payee: "Gym", cleared: "cleared", recurrence: { freq: "monthly", anchorDay: 31 },
-      source: { sourceBudget: "x", identity: "y", occurrenceIndex: 0 },
+      source: {
+        sourceBudget: "x",
+        naturalKey: fingerprint(["gym"]),
+        identity: fingerprint(["gym", "2026-01-31"]),
+        occurrenceIndex: 0,
+        firstSeenExportTs: "2026-01-31",
+        lastSeenExportTs: "2026-01-31",
+      },
     });
     const next = ops.scheduledSuccessor(monthly)!;
     expect(next.date).toBe("2026-02-28"); // short months clamp, honouring the anchor
