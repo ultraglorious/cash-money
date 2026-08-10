@@ -103,6 +103,13 @@ export interface ImportProvenance {
   identity: Fingerprint;
   firstSeenExportTs: string;
   lastSeenExportTs: string;
+  /**
+   * Hash of the counterparty account the statement named, when it named one.
+   * Hashed rather than stored: the budget file has no business holding anyone's
+   * account number, and a hash is all that's needed to recognise the same
+   * counterparty next time and reuse the name you gave it.
+   */
+  counterparty?: Fingerprint;
 }
 
 export interface Transaction {

@@ -28,4 +28,15 @@ describe("guessFormat", () => {
     expect(g.dateColumn).toBeUndefined();
     expect(g.amount).toBeUndefined();
   });
+
+  it("spots the counterparty account column, and leaves it alone when there isn't one", () => {
+    const bank = guessFormat(
+      ["Date", "Sender/receiver name", "Sender/receiver account", "Amount", "Description"],
+      [{ Date: "2026-01-02", "Sender/receiver name": "Acme", "Sender/receiver account": "GB29NWBK60161331926819", Amount: "-12.30", Description: "Invoice" }],
+    );
+    expect(bank.counterpartyColumn).toBe("Sender/receiver account");
+
+    const card = guessFormat(["Date", "Payee", "Amount"], [{ Date: "2026-01-02", Payee: "Shop", Amount: "-4.00" }]);
+    expect(card.counterpartyColumn).toBeUndefined();
+  });
 });

@@ -30,6 +30,8 @@ import {
   deduceInvoiceCoverage,
   findTransferCandidates,
   formatFitsHeaders,
+  learnPayees,
+  nameIncomingRow,
   guessFormat,
   mergeImport,
   newId,
@@ -453,7 +455,20 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       });
       setResult(r);
       setSelected(new Set(r.toAdd.map((row) => row.sourceRow))); // all checked by default
-      setEdits(new Map());
+      // Rows the bank didn't name arrive blank, which is unreadable without the
+      // statement open beside you. Seed each row with the best name available —
+      // what this counterparty or this description was called last time, or the
+      // description itself cleaned up — and the category that name usually gets.
+      // These are seeds in an editable field, not decisions.
+      const memory = learnPayees(app.budget);
+      const seeded = new Map<number, RowEdit>();
+      for (const row of r.toAdd) {
+        const named = nameIncomingRow({ payee: row.payee, memo: row.memo, counterparty: row.counterparty }, memory);
+        if (named.payee !== row.payee || named.categoryId) {
+          seeded.set(row.sourceRow, { payee: named.payee, ...(named.categoryId ? { categoryId: named.categoryId } : {}) });
+        }
+      }
+      setEdits(seeded);
     } catch (e) {
       setError(String(e));
       setResult(null);

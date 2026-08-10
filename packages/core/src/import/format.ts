@@ -57,6 +57,11 @@ export interface RegisterFormat {
   amount: AmountMapping;
   payeeColumn: string;
   memoColumn?: string;
+  /**
+   * Column holding the OTHER side's account number, when the export has one.
+   * Only ever hashed, never stored — see ImportProvenance.counterparty.
+   */
+  counterpartyColumn?: string;
   /** Column naming the account. Absent = single-account file (bank statement). */
   accountColumn?: string;
   /** How rows are categorized. Absent = rows import uncategorized. */
@@ -115,6 +120,7 @@ export const RegisterFormatSchema: z.ZodType<RegisterFormat> = z.object({
   ]),
   payeeColumn: nonEmpty,
   memoColumn: nonEmpty.optional(),
+  counterpartyColumn: nonEmpty.optional(),
   accountColumn: nonEmpty.optional(),
   category: z
     .union([

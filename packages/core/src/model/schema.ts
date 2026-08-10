@@ -96,6 +96,7 @@ const ImportProvenanceSchema = z.object({
   identity: fingerprint,
   firstSeenExportTs: z.string(),
   lastSeenExportTs: z.string(),
+  counterparty: fingerprint.optional(),
 });
 
 export const TransactionSchema = z.object({

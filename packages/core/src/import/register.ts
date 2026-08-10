@@ -3,6 +3,7 @@ import { parseMoney, type CurrencyConfig } from "../money.js";
 import { epochDay, type ISODate } from "../time.js";
 import type { CategoryGroupKind, ClearedStatus, FlagColor } from "../model/types.js";
 import type { ImportDateFormat, RegisterFormat } from "./format.js";
+import { fingerprint, type Fingerprint } from "../ids.js";
 import { fold, trimN } from "./text.js";
 
 /**
@@ -100,6 +101,8 @@ export interface NormTxn {
   /** Whether this row's group imports hidden. */
   groupHidden?: boolean;
   memo: string;
+  /** Hash of the counterparty's account number, when the export carries one. */
+  counterparty?: Fingerprint;
   /** Signed minor units: inflow positive, outflow negative. */
   amount: number;
   cleared: ClearedStatus;
@@ -252,6 +255,9 @@ export function mapRegisterRows(
       }
 
       const memoRaw = format.memoColumn ? (row[format.memoColumn] ?? "") : "";
+      // Hashed at the boundary: the raw account number never travels further.
+      const counterpartyRaw = format.counterpartyColumn ? trimN(row[format.counterpartyColumn] ?? "") : "";
+      const counterparty = counterpartyRaw ? fingerprint(["counterparty", fold(counterpartyRaw)]) : undefined;
       const splitMatch = splitRe?.exec(memoRaw);
       const split = splitMatch ? { n: Number(splitMatch[1]), m: Number(splitMatch[2]) } : undefined;
 
@@ -286,6 +292,7 @@ export function mapRegisterRows(
               : "normal",
         groupHidden: groupFold ? groupFold === hiddenGroupFold : undefined,
         memo: trimN(memoRaw),
+        ...(counterparty ? { counterparty } : {}),
         amount,
         cleared,
         flag,

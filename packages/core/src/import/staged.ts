@@ -48,6 +48,8 @@ export interface StagedTxn {
   payee: string;
   payeeFold: string;
   memo: string;
+  /** Hash of the counterparty account, carried from the mapped row. */
+  counterparty?: Fingerprint;
   /** Total signed minor units (equals the sum of `lines` when categorized). */
   amount: number;
   cleared: ClearedStatus;

@@ -10,6 +10,7 @@ export interface FormatGuess {
   dateColumn?: string;
   payeeColumn?: string;
   memoColumn?: string;
+  counterpartyColumn?: string;
   amount?: RegisterFormat["amount"];
   trueDate?: RegisterFormat["trueDate"];
 }
@@ -33,6 +34,9 @@ export function guessFormat(
   guess.payeeColumn = find(headers, /payee|description|name|details|narrative|memo/i);
   // Memo: best matching PATTERN wins (not header order) — "Description" beats a
   // usually-empty "Reference number" even when it appears later in the file.
+  // The other side's account number, when the export carries one: an exact key
+  // for recognising the same counterparty, and never stored unhashed.
+  guess.counterpartyColumn = find(headers, /(sender|receiver|counterparty|beneficiary|payer).*(account|iban)|^iban$/i);
   const rest = headers.filter((h) => h !== guess.payeeColumn);
   for (const re of [/description/i, /memo|note/i, /reference/i]) {
     const hit = find(rest, re);
