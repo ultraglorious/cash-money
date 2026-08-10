@@ -56,6 +56,7 @@ import { isTauri, readTextAbs, readZipCsvs } from "../../platform/tauriFs";
 import {
   buildFormat,
   EMPTY_MAPPING,
+  NONE,
   FormatMappingForm,
   mappingComplete,
   stateFromFormat,
@@ -542,9 +543,17 @@ function StatementPane({ onDone }: { onDone: () => void }) {
     }
     const f = saved.find((s) => s.format.id === choice)?.format;
     if (f) {
-      setMapping(stateFromFormat(f));
+      const state = stateFromFormat(f);
+      // A mapping saved before a column existed shouldn't have to be rebuilt by
+      // hand: if this file has a counterparty account and the mapping doesn't
+      // name one yet, fill it in. It shows in the form, so it can be cleared.
+      const upgraded =
+        state.counterpartyColumn === NONE && parsed
+          ? { ...state, counterpartyColumn: guessFormat(parsed.headers, []).counterpartyColumn ?? NONE }
+          : state;
+      setMapping(upgraded);
       setTrueDate(f.trueDate);
-      setMappingOpen(false);
+      setMappingOpen(upgraded.counterpartyColumn !== state.counterpartyColumn);
     }
   };
 
@@ -571,7 +580,14 @@ function StatementPane({ onDone }: { onDone: () => void }) {
         await app.saveFormats([...saved, { format: durable, lastUsed: today() }]).catch(() => undefined);
       }
     } else {
-      await app.saveFormats(saved.map((s) => (s.format.id === formatChoice ? { ...s, lastUsed: today() } : s))).catch(() => undefined);
+      // Edits to a chosen mapping are saved back to it. They used to apply to
+      // the import in hand and then vanish, so adding a column meant either
+      // re-doing it every time or accumulating near-duplicate mappings.
+      const previous = saved.find((s) => s.format.id === formatChoice)?.format;
+      durable = { ...durable, name: previous?.name ?? durable.name };
+      await app
+        .saveFormats(saved.map((s) => (s.format.id === formatChoice ? { format: durable, lastUsed: today() } : s)))
+        .catch(() => undefined);
     }
     const sourceKey = await app.statementSourceKey(accId, durable.id);
 
@@ -647,9 +663,14 @@ function StatementPane({ onDone }: { onDone: () => void }) {
             />
             <Select label="Column mapping" data={formatOptions} value={formatChoice} onChange={chooseFormat} allowDeselect={false} />
           </Group>
-          <Anchor size="xs" component="button" type="button" onClick={() => setMappingOpen((o) => !o)}>
-            {mappingOpen ? "Hide column mapping" : "Adjust column mapping…"}
-          </Anchor>
+          <Group gap="xs">
+            <Anchor size="xs" component="button" type="button" onClick={() => setMappingOpen((o) => !o)}>
+              {mappingOpen ? "Hide column mapping" : "Adjust column mapping…"}
+            </Anchor>
+            {formatChoice !== NEW_MAPPING && (
+              <Text size="xs" c="dimmed">— changes are saved back to this mapping</Text>
+            )}
+          </Group>
           <Collapse in={mappingOpen}>
             <Stack gap="sm">
               <FormatMappingForm headers={parsed.headers} value={mapping} onChange={(m) => { setMapping(m); setResult(null); setRecalled(false); }} />
