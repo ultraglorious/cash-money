@@ -3,6 +3,7 @@ import { ActionIcon, Box, Button, Group, Modal, NumberInput, Select, Slider, Sta
 import { IconPlus, IconTrash } from "@tabler/icons-react";
 import { newId, type Cents, type SplitLine, type Ulid } from "@cash-money/core";
 import { useApp } from "../../state";
+import { categoryOptions } from "../../categoryOptions";
 import { money } from "../../format";
 
 interface Line {
@@ -26,6 +27,7 @@ export function SplitEditorModal({
   opened,
   onClose,
   amount,
+  accountId,
   initialSplits,
   onSave,
   onUnsplit,
@@ -33,6 +35,8 @@ export function SplitEditorModal({
   opened: boolean;
   onClose: () => void;
   amount: Cents;
+  /** Whose money this is: split lines may only use that household's envelopes. */
+  accountId: Ulid | null;
   initialSplits?: SplitLine[];
   onSave: (splits: SplitLine[]) => void;
   onUnsplit?: () => void;
@@ -54,10 +58,8 @@ export function SplitEditorModal({
     }
   }, [opened, initialSplits, target]);
 
-  const options = budget.groups
-    .filter((g) => g.kind !== "income")
-    .map((g) => ({ group: g.name, items: budget.categories.filter((c) => c.groupId === g.id).map((c) => ({ value: c.id, label: c.name })) }))
-    .filter((grp) => grp.items.length > 0);
+  const household = accountId ? budget.accounts.find((a) => a.id === accountId)?.household : undefined;
+  const options = categoryOptions(budget, accountId ? { household } : undefined);
 
   const sum = lines.reduce((s, l) => s + l.amount, 0);
   const remaining = target - sum;

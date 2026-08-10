@@ -611,7 +611,10 @@ function StatementPane({ onDone }: { onDone: () => void }) {
     ...saved.map((s) => ({ value: s.format.id, label: s.format.name })),
   ];
   const canPreview = Boolean(parsed && accountId && mappingComplete(mapping));
-  const categoryData = categoryOptions(app.budget);
+  // Only the envelopes of the household whose account this is: filing a row
+  // against another household's envelope moves money that never moved.
+  const importAccount = app.budget.accounts.find((a) => a.id === accountId);
+  const categoryData = categoryOptions(app.budget, importAccount ? { household: importAccount.household } : undefined);
   const unclaimedTxs = result
     ? result.unclaimedBudget.map((id) => app.budget.transactions.find((t) => t.id === id)).filter((t): t is Transaction => !!t)
     : [];
