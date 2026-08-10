@@ -38,9 +38,23 @@ describe("budget file (single-file container)", () => {
   it("round-trips the whole budget plus formats and sources", () => {
     const text = serializeBudgetFile(sample(), "2026-08-06T12:00:00Z");
     const back = parseBudgetFile(text);
-    expect(back.loaded).toEqual(sample().loaded);
+    // A budget written before payees existed comes back with an empty list
+    // rather than an absent one, so nothing downstream has to guard for it.
+    expect(back.loaded).toEqual({ ...sample().loaded, payees: [] });
     expect(back.savedFormats).toEqual(sample().savedFormats);
     expect(back.importSources).toEqual(sample().importSources);
+  });
+
+  it("round-trips the payee master list, aliases and all", () => {
+    const withPayees = {
+      ...sample(),
+      loaded: {
+        ...sample().loaded,
+        payees: [{ id: f.tid("PNorthwind"), name: "Northwind", aliases: ["as northwind bank", "as northwind insurance"] }],
+      },
+    };
+    const back = parseBudgetFile(serializeBudgetFile(withPayees, "T"));
+    expect(back.loaded.payees).toEqual(withPayees.loaded.payees);
   });
 
   it("is byte-stable: same data serializes identically", () => {

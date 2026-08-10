@@ -55,8 +55,8 @@ describe("reconcileStatement passes", () => {
   it("exact: flags interchangeable ties (two identical rides, either pairing is fine)", () => {
     const b = budget([tx("T1", "2026-07-15", -990, "Taxi"), tx("T2", "2026-07-15", -990, "Taxi")]);
     const csv = csvOf([
-      ["2026-07-15", "BOLT.EU/1", "-9.90"],
-      ["2026-07-15", "BOLT.EU/2", "-9.90"],
+      ["2026-07-15", "RIDECO.EU/1", "-9.90"],
+      ["2026-07-15", "RIDECO.EU/2", "-9.90"],
     ]);
     const r = reconcileStatement(b, csv, FORMAT, OPTS);
     expect(r.matches).toHaveLength(2);

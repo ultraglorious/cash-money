@@ -183,6 +183,48 @@ never made that decision — any on-budget outflow with no category that isn't a
 same-scope pocket shuffle — are flagged **needs a category** in the register and
 counted in the account header, so the drain is never silent.
 
+## Payees: identity, and the names banks use
+
+A bank names a row its own way — `AS Northwind Bank`, `EXAMPLECO OÜ`,
+`RIDECO.EU/O/1234567890`, `FRUITCO.COM/BILL` — or not at all, for the things the bank
+did to you (interest, fees, standing orders, ATM withdrawals). Measured against
+real statements, barely one row in ten arrives carrying a name its owner uses.
+
+So there is a **payee master list** (`Payee`: id, name, aliases). Transactions
+still carry payee *text*: the engine never reads payees, analytics groups by
+name, and threading an id through every row would buy nothing. What the id buys
+is a mapping that outlives a spelling — rename every `Northwind` row to `AS Northwind Bank`
+and its aliases still point at the same entry, because they hang off identity
+rather than text. `ops.renamePayee` keeps the two in step, and renaming onto a
+name already in use merges the entries and keeps both sets of aliases.
+`ops.syncPayees` mints an entry for every spelling the transactions use; it runs
+on every load and is idempotent, so a payee typed straight into the register
+turns up in the list without ceremony.
+
+An incoming row is named by the first of three answers that applies
+(`import/payee.ts`):
+
+1. an **alias** you recorded — exact, deterministic, and yours;
+2. a **match** against your existing payees — strip the legal form (`AS`, `OÜ`,
+   `GmbH`), tokenise, and take the most specific payee whose every word appears
+   in the bank's string. On real statements this alone names three rows in four,
+   `RIDECO.EU/O/1234567890 → Rideco` included. It is deliberately conservative:
+   never a partial word, never a token under three characters, so a first-time
+   merchant keeps the bank's name rather than wearing someone else's;
+3. the **description**, stripped of account numbers, card masks, dates and the
+   period marker a recurring fee names — dropping `06.2026` is what makes this
+   month's fee derive the same name as last month's, and therefore match it.
+
+The category comes from whatever that payee was last filed under, derived rather
+than stored so it cannot go stale.
+
+Only aliases are persisted, and only from **corrections**: accepting a suggested
+match teaches nothing, and strings carrying a per-transaction id would fill the
+list with keys that never recur. Aliases are visible and removable in the Payees
+screen, so a bad one is a click to undo rather than something buried in history.
+The three-way merge unions alias lists rather than picking a winner — an alias
+learned on the laptop and another learned on the desktop are both true.
+
 ## The import pipeline (`packages/core/src/import/`)
 
 Imports are **format-driven**: nothing about any particular app's CSV shape is

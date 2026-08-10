@@ -51,8 +51,6 @@ export interface StatementRow {
   naturalKey: Fingerprint;
   occurrenceIndex: number;
   identity: Fingerprint;
-  /** Hash of the counterparty account, when the statement named one. */
-  counterparty?: Fingerprint;
 }
 
 export type MatchKind = "identity" | "exact" | "combo" | "wide";
@@ -126,7 +124,6 @@ export function reconcileStatement(
     naturalKey,
     occurrenceIndex,
     identity,
-    ...(t.counterparty ? { counterparty: t.counterparty } : {}),
   }));
 
   if (rows.length === 0) {
@@ -304,7 +301,6 @@ export function buildStatementTransactions(
       identity: r.identity,
       firstSeenExportTs: asOf,
       lastSeenExportTs: asOf,
-      ...(r.counterparty ? { counterparty: r.counterparty } : {}),
     },
   }));
 }

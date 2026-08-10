@@ -103,13 +103,6 @@ export interface ImportProvenance {
   identity: Fingerprint;
   firstSeenExportTs: string;
   lastSeenExportTs: string;
-  /**
-   * Hash of the counterparty account the statement named, when it named one.
-   * Hashed rather than stored: the budget file has no business holding anyone's
-   * account number, and a hash is all that's needed to recognise the same
-   * counterparty next time and reuse the name you gave it.
-   */
-  counterparty?: Fingerprint;
 }
 
 export interface Transaction {
@@ -148,6 +141,25 @@ export interface Transaction {
 }
 
 /** The fully-hydrated in-memory model handed to the store and the engine. */
+/**
+ * A payee you named, with the technical strings that mean it.
+ *
+ * Transactions carry payee TEXT, not an id — the engine never reads payees and
+ * analytics groups by name, so there is nothing to gain from threading an id
+ * through every row. What an id does buy is a mapping that survives a rename:
+ * call every "Northwind" row "AS Northwind Bank" tomorrow and the aliases still point here,
+ * because they hang off the identity rather than the spelling.
+ *
+ * `aliases` are folded technical strings — what a bank called this payee
+ * ("as northwind bank", "rideco.eu/o/1234567890") — recorded when you correct an
+ * imported row so the next statement needs no correcting.
+ */
+export interface Payee {
+  id: Ulid;
+  name: string;
+  aliases: string[];
+}
+
 export interface LoadedBudget {
   budget: Budget;
   accounts: Account[];
@@ -155,4 +167,10 @@ export interface LoadedBudget {
   categories: Category[];
   assignments: MonthlyAssignment[];
   transactions: Transaction[];
+  /**
+   * Optional so every budget written before payees existed still loads, and so
+   * the many fixtures that build a budget by hand stay valid. `ops.syncPayees`
+   * fills it from the transactions on load; treat undefined as empty.
+   */
+  payees?: Payee[];
 }

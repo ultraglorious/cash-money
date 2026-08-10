@@ -1,21 +1,26 @@
-import type { Fingerprint, Ulid } from "../ids.js";
-import type { LoadedBudget } from "../model/types.js";
+import type { Ulid } from "../ids.js";
+import type { LoadedBudget, Payee } from "../model/types.js";
 import { fold, trimN } from "./text.js";
 
 /**
- * Naming a statement row the bank didn't name.
+ * Naming an imported row the way you would name it.
  *
- * Banks fill the counterparty column for transfers between people and leave it
- * empty for everything the bank did to you — interest, account fees, card fees,
- * standing orders, ATM withdrawals. Those rows arrive blank, which means the
- * only way to tell them apart is to open the statement alongside the app and
- * read the description yourself.
+ * A bank names rows its own way: legal entities ("AS Northwind Bank", "EXAMPLECO OÜ"),
+ * payment-processor strings ("RIDECO.EU/O/1234567890", "FRUITCO.COM/BILL"), or
+ * nothing at all for the things the bank did to you — interest, fees, standing
+ * orders, ATM withdrawals. Measured against real statements, only a handful of
+ * rows arrive already carrying a name you actually use.
  *
- * The description always says what the row is; it just says it with the account
- * number, the card mask and a date range wrapped around it. Strip those and
- * what remains is a usable name — "Account interest", "Premium client monthly
- * fee", "Cash withdrawal: BRINK'S ATM …". It is a starting point to correct,
- * not a claim to be right, so the wizard leaves it editable.
+ * Three answers, in order of how much they can be trusted:
+ *
+ *   1. an ALIAS you recorded — exact, deterministic, and yours;
+ *   2. a MATCH against your existing payees — strip the legal form, and if every
+ *      word of one of your payees appears in the bank's string, that is almost
+ *      certainly who it is ("AS Northwind Bank" → "Northwind");
+ *   3. the DESCRIPTION, cleaned of account numbers, card masks and dates, which
+ *      is all there is for a row the bank never named.
+ *
+ * Only (1) is stored, and only because you confirmed it. (2) and (3) propose.
  */
 
 /** IBAN-shaped tokens, card masks, dates, times, and long digit runs. */
@@ -39,7 +44,7 @@ const MAX_LENGTH = 60;
 /**
  * A readable payee from a statement description, or "" when nothing survives.
  * Deterministic and pure — the same description always names the same thing,
- * which is what makes it a usable learning key too.
+ * which is what makes it a usable alias key too.
  */
 export function payeeFromDescription(description: string): string {
   let s = trimN(description);
@@ -58,66 +63,113 @@ export function payeeFromDescription(description: string): string {
   return s;
 }
 
-/** The key a description is remembered under: its derived name, folded. */
-export function descriptionKey(description: string): string {
-  return fold(payeeFromDescription(description));
+/**
+ * The key a row is remembered under: what the bank called it, else the shape of
+ * its description. One function, so an alias recorded from a row still matches
+ * the same row next month.
+ */
+export function technicalKey(row: { payee: string; memo: string }): string {
+  return fold(row.payee) || fold(payeeFromDescription(row.memo));
 }
 
-export interface PayeeMemory {
-  /** What a counterparty account was called last time (the reliable key). */
-  byCounterparty: Map<Fingerprint, string>;
-  /** What this shape of description was called last time. */
-  byDescription: Map<string, string>;
-  /** The category a payee usually gets. */
-  categoryOf: Map<string, Ulid>;
+/** Legal forms and company suffixes, never part of what you call something. */
+const LEGAL = /\b(as|oü|ou|uab|sia|ab|oy|ltd|limited|gmbh|plc|inc|llc|osaühing|a\/s)\b/g;
+/** Short tokens match too much — "as" alone would name half the statement. */
+const MIN_TOKEN = 3;
+
+function tokens(s: string): Set<string> {
+  const folded = fold(s)
+    .replace(/[õö]/g, "o")
+    .replace(/[üú]/g, "u")
+    .replace(/[äá]/g, "a")
+    .replace(LEGAL, " ");
+  return new Set(folded.split(/[^a-z0-9]+/).filter((t) => t.length >= MIN_TOKEN));
 }
 
 /**
- * What the budget already knows about naming and filing rows.
+ * The payee whose every word appears in the bank's string — the most specific
+ * one, so "Northwind Insurance" beats "Northwind" when both fit.
  *
- * Newest first: a payee you renamed last month should win over what you called
- * the same counterparty two years ago. Transfers are skipped — their payee is
- * derived text, not a name you chose.
+ * Deliberately conservative: never a partial word, never a token under three
+ * characters. A first-time merchant comes back undefined rather than wearing
+ * someone else's name.
  */
-export function learnPayees(b: LoadedBudget): PayeeMemory {
-  const byCounterparty = new Map<Fingerprint, string>();
-  const byDescription = new Map<string, string>();
-  const categoryOf = new Map<string, Ulid>();
-
-  const newestFirst = [...b.transactions].sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0));
-  for (const t of newestFirst) {
-    if (t.transfer) continue;
-    const payee = trimN(t.payee);
-    if (payee) {
-      const cp = t.source?.counterparty;
-      if (cp && !byCounterparty.has(cp)) byCounterparty.set(cp, payee);
-      const key = descriptionKey(t.memo);
-      if (key && !byDescription.has(key)) byDescription.set(key, payee);
-      if (t.categoryId && !categoryOf.has(fold(payee))) categoryOf.set(fold(payee), t.categoryId);
+export function matchExistingPayee(technical: string, payees: readonly Payee[]): Payee | undefined {
+  const words = tokens(technical);
+  if (words.size === 0) return undefined;
+  let best: Payee | undefined;
+  let bestScore = [0, 0];
+  for (const p of payees) {
+    const pw = tokens(p.name);
+    if (pw.size === 0) continue;
+    let all = true;
+    for (const w of pw) {
+      if (!words.has(w)) {
+        all = false;
+        break;
+      }
+    }
+    if (!all) continue;
+    // More words wins; equal words, more letters wins. Scoring rather than
+    // first-past-the-post keeps the answer independent of list order, so two
+    // budgets holding the same payees always name a row the same way.
+    const score = [pw.size, [...pw].reduce((n, w) => n + w.length, 0)];
+    if (score[0]! > bestScore[0]! || (score[0] === bestScore[0] && score[1]! > bestScore[1]!)) {
+      best = p;
+      bestScore = score;
     }
   }
-  return { byCounterparty, byDescription, categoryOf };
+  return best;
 }
 
-export interface NamedRow {
+/** The category a payee was last filed under — derived, so it can't go stale. */
+export function lastCategoryByPayee(b: LoadedBudget): Map<string, Ulid> {
+  const out = new Map<string, Ulid>();
+  const newestFirst = [...b.transactions].sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0));
+  for (const t of newestFirst) {
+    if (t.transfer || !t.categoryId) continue;
+    const key = fold(t.payee);
+    if (key && !out.has(key)) out.set(key, t.categoryId);
+  }
+  return out;
+}
+
+export interface ProposedName {
   payee: string;
-  memo: string;
-  counterparty?: Fingerprint;
+  categoryId?: Ulid;
+  /** Which of the three answers this came from — the wizard says so. */
+  from: "alias" | "match" | "bank" | "description";
 }
 
 /**
- * The best name available for an incoming row, and the category that name
- * usually gets. Preference order: what the bank supplied, what this exact
- * counterparty was called before, what this description was called before, and
- * finally the description itself, cleaned up.
+ * What to call an incoming row, and how that was decided.
+ *
+ * `payees` is the master list; `categories` comes from `lastCategoryByPayee` and
+ * is passed in so a whole statement shares one pass over the transactions.
  */
-export function nameIncomingRow(row: NamedRow, memory: PayeeMemory): { payee: string; categoryId?: Ulid } {
+export function nameIncomingRow(
+  row: { payee: string; memo: string },
+  payees: readonly Payee[],
+  categories: Map<string, Ulid>,
+): ProposedName {
+  const withCategory = (payee: string, from: ProposedName["from"]): ProposedName => {
+    const categoryId = categories.get(fold(payee));
+    return { payee, from, ...(categoryId ? { categoryId } : {}) };
+  };
+
+  const key = technicalKey(row);
+  if (key) {
+    const aliased = payees.find((p) => p.aliases.includes(key));
+    if (aliased) return withCategory(aliased.name, "alias");
+  }
+
   const supplied = trimN(row.payee);
-  const payee =
-    supplied ||
-    (row.counterparty ? memory.byCounterparty.get(row.counterparty) : undefined) ||
-    memory.byDescription.get(descriptionKey(row.memo)) ||
-    payeeFromDescription(row.memo);
-  const categoryId = payee ? memory.categoryOf.get(fold(payee)) : undefined;
-  return { payee, ...(categoryId ? { categoryId } : {}) };
+  if (supplied) {
+    const matched = matchExistingPayee(supplied, payees);
+    return matched ? withCategory(matched.name, "match") : withCategory(supplied, "bank");
+  }
+
+  const derived = payeeFromDescription(row.memo);
+  const matched = derived ? matchExistingPayee(derived, payees) : undefined;
+  return matched ? withCategory(matched.name, "match") : withCategory(derived, "description");
 }

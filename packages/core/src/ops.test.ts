@@ -528,3 +528,73 @@ describe("repeating transfers", () => {
     expect(stopped.transactions.filter((t) => t.transfer).every((t) => t.recurrence === undefined)).toBe(true);
   });
 });
+
+describe("the payee master list", () => {
+  const withPayees = (): LoadedBudget => ({
+    ...base(),
+    transactions: [
+      f.txn({ id: f.tid("PT1"), accountId: CHK, date: "2026-01-05", amount: -1000 as Cents, categoryId: GRO, payee: "Northwind" }),
+      f.txn({ id: f.tid("PT2"), accountId: CHK, date: "2026-01-06", amount: -2000 as Cents, categoryId: GRO, payee: "Greengrocer" }),
+      f.txn({
+        id: f.tid("PT3"), accountId: CHK, date: "2026-01-07", amount: -500 as Cents, categoryId: undefined,
+        payee: "Transfer to: Savings", transfer: { counterAccountId: f.tid("ASAV"), pairId: f.tid("PP1") },
+      }),
+    ],
+  });
+
+  it("syncPayees mints one entry per spelling, skips transfer legs, and does nothing twice", () => {
+    const first = ops.syncPayees(withPayees());
+    expect(first.added).toBe(2);
+    expect(first.budget.payees!.map((p) => p.name).sort()).toEqual(["Greengrocer", "Northwind"]);
+
+    const again = ops.syncPayees(first.budget);
+    expect(again.added).toBe(0);
+    expect(again.budget).toBe(first.budget); // untouched, so no needless save
+  });
+
+  it("keeps aliases through a rename — the whole point of the id", () => {
+    let b = ops.syncPayees(withPayees()).budget;
+    const northwind = b.payees!.find((p) => p.name === "Northwind")!;
+    b = ops.addPayeeAlias(b, northwind.id, "AS Northwind Bank");
+    b = ops.renamePayee(b, "Northwind", "AS Northwind Bank");
+
+    const renamed = b.payees!.find((p) => p.id === northwind.id)!;
+    expect(renamed.name).toBe("AS Northwind Bank");
+    expect(renamed.aliases).toEqual(["as northwind bank"]); // still points here
+    expect(b.transactions.find((t) => t.id === f.tid("PT1"))!.payee).toBe("AS Northwind Bank");
+  });
+
+  it("renaming onto an existing payee merges them and keeps both sets of aliases", () => {
+    let b = ops.syncPayees(withPayees()).budget;
+    const northwind = b.payees!.find((p) => p.name === "Northwind")!;
+    const greengrocer = b.payees!.find((p) => p.name === "Greengrocer")!;
+    b = ops.addPayeeAlias(b, northwind.id, "as northwind bank");
+    b = ops.addPayeeAlias(b, greengrocer.id, "greengrocer oü");
+    b = ops.renamePayee(b, "Northwind", "Greengrocer");
+
+    expect(b.payees).toHaveLength(1);
+    expect(b.payees![0]!.name).toBe("Greengrocer");
+    expect([...b.payees![0]!.aliases].sort()).toEqual(["as northwind bank", "greengrocer oü"]);
+    expect(b.transactions.filter((t) => t.payee === "Greengrocer")).toHaveLength(2);
+  });
+
+  it("gives an alias to exactly one payee", () => {
+    let b = ops.syncPayees(withPayees()).budget;
+    const [a, c] = b.payees!;
+    b = ops.addPayeeAlias(b, a!.id, "shared key");
+    b = ops.addPayeeAlias(b, c!.id, "shared key");
+    expect(b.payees!.find((p) => p.id === a!.id)!.aliases).toEqual([]);
+    expect(b.payees!.find((p) => p.id === c!.id)!.aliases).toEqual(["shared key"]);
+
+    b = ops.removePayeeAlias(b, c!.id, "SHARED KEY"); // case doesn't matter
+    expect(b.payees!.find((p) => p.id === c!.id)!.aliases).toEqual([]);
+  });
+
+  it("ensurePayee mints on first sighting and finds it afterwards", () => {
+    const first = ops.ensurePayee(base(), "Cornerstore");
+    expect(first.budget.payees).toHaveLength(1);
+    const second = ops.ensurePayee(first.budget, "  cornerstore ");
+    expect(second.payee.id).toBe(first.payee.id);
+    expect(second.budget).toBe(first.budget);
+  });
+});

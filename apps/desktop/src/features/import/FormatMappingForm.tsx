@@ -14,7 +14,6 @@ export interface MappingState {
   dateFormat: ImportDateFormat;
   payeeColumn: string;
   memoColumn: string; // NONE when unmapped
-  counterpartyColumn: string; // NONE when unmapped
   amountMode: "single" | "split";
   amountColumn: string;
   outflowPositive: boolean;
@@ -27,7 +26,6 @@ export const EMPTY_MAPPING: MappingState = {
   dateFormat: "iso",
   payeeColumn: "",
   memoColumn: NONE,
-  counterpartyColumn: NONE,
   amountMode: "single",
   amountColumn: "",
   outflowPositive: false,
@@ -42,7 +40,6 @@ export function stateFromGuess(headers: string[]): MappingState {
     dateColumn: g.dateColumn ?? "",
     payeeColumn: g.payeeColumn ?? "",
     memoColumn: g.memoColumn ?? NONE,
-    counterpartyColumn: g.counterpartyColumn ?? NONE,
     ...(g.amount?.mode === "inOut"
       ? { amountMode: "split" as const, inflowColumn: g.amount.inflowColumn, outflowColumn: g.amount.outflowColumn }
       : { amountMode: "single" as const, amountColumn: g.amount?.mode === "signed" ? g.amount.column : "" }),
@@ -55,7 +52,6 @@ export function stateFromFormat(f: RegisterFormat): MappingState {
     dateFormat: f.date.format,
     payeeColumn: f.payeeColumn,
     memoColumn: f.memoColumn ?? NONE,
-    counterpartyColumn: f.counterpartyColumn ?? NONE,
     ...(f.amount.mode === "inOut"
       ? {
           amountMode: "split" as const,
@@ -86,7 +82,6 @@ export function buildFormat(m: MappingState, id: string, name: string): Register
     date: { column: m.dateColumn, format: m.dateFormat },
     payeeColumn: m.payeeColumn,
     ...(m.memoColumn !== NONE ? { memoColumn: m.memoColumn } : {}),
-    ...(m.counterpartyColumn !== NONE ? { counterpartyColumn: m.counterpartyColumn } : {}),
     amount:
       m.amountMode === "single"
         ? { mode: "signed", column: m.amountColumn, outflowPositive: m.outflowPositive }
@@ -123,13 +118,6 @@ export function FormatMappingForm({
       <Group grow>
         <Select label="Payee / description column" data={headers} value={value.payeeColumn} onChange={(v) => set({ payeeColumn: v ?? "" })} />
         <Select label="Memo column (optional)" data={[NONE, ...headers]} value={value.memoColumn} onChange={(v) => set({ memoColumn: v ?? NONE })} />
-        <Select
-          label="Counterparty account (optional)"
-          description="Only ever hashed — it recognises the same payer or payee next time without keeping anyone's account number."
-          data={[NONE, ...headers]}
-          value={value.counterpartyColumn}
-          onChange={(v) => set({ counterpartyColumn: v ?? NONE })}
-        />
       </Group>
       <SegmentedControl
         data={[

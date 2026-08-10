@@ -30,8 +30,9 @@ import {
   deduceInvoiceCoverage,
   findTransferCandidates,
   formatFitsHeaders,
-  learnPayees,
+  lastCategoryByPayee,
   nameIncomingRow,
+  technicalKey,
   guessFormat,
   mergeImport,
   newId,
@@ -42,6 +43,7 @@ import {
   type ImportConfig,
   type InvoiceCoverage,
   type RegisterFormat,
+  type ProposedName,
   type SavedFormat,
   type StagingResult,
   type StatementReconcile,
@@ -56,7 +58,6 @@ import { isTauri, readTextAbs, readZipCsvs } from "../../platform/tauriFs";
 import {
   buildFormat,
   EMPTY_MAPPING,
-  NONE,
   FormatMappingForm,
   mappingComplete,
   stateFromFormat,
@@ -405,6 +406,9 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   const [result, setResult] = useState<StatementReconcile | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set()); // sourceRow keys
   const [edits, setEdits] = useState<Map<number, RowEdit>>(new Map());
+  // What the app suggested each row was called, so a correction can be told
+  // apart from an acceptance — only corrections are worth remembering.
+  const [proposed, setProposed] = useState<Map<number, ProposedName>>(new Map());
   const [coverageOn, setCoverageOn] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -461,14 +465,21 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       // what this counterparty or this description was called last time, or the
       // description itself cleaned up — and the category that name usually gets.
       // These are seeds in an editable field, not decisions.
-      const memory = learnPayees(app.budget);
+      const categories = lastCategoryByPayee(app.budget);
+      const payees = app.budget.payees ?? [];
       const seeded = new Map<number, RowEdit>();
+      const named = new Map<number, ProposedName>();
       for (const row of r.toAdd) {
-        const named = nameIncomingRow({ payee: row.payee, memo: row.memo, counterparty: row.counterparty }, memory);
-        if (named.payee !== row.payee || named.categoryId) {
-          seeded.set(row.sourceRow, { payee: named.payee, ...(named.categoryId ? { categoryId: named.categoryId } : {}) });
+        const proposal = nameIncomingRow({ payee: row.payee, memo: row.memo }, payees, categories);
+        named.set(row.sourceRow, proposal);
+        if (proposal.payee !== row.payee || proposal.categoryId) {
+          seeded.set(row.sourceRow, {
+            payee: proposal.payee,
+            ...(proposal.categoryId ? { categoryId: proposal.categoryId } : {}),
+          });
         }
       }
+      setProposed(named);
       setEdits(seeded);
     } catch (e) {
       setError(String(e));
@@ -543,17 +554,9 @@ function StatementPane({ onDone }: { onDone: () => void }) {
     }
     const f = saved.find((s) => s.format.id === choice)?.format;
     if (f) {
-      const state = stateFromFormat(f);
-      // A mapping saved before a column existed shouldn't have to be rebuilt by
-      // hand: if this file has a counterparty account and the mapping doesn't
-      // name one yet, fill it in. It shows in the form, so it can be cleared.
-      const upgraded =
-        state.counterpartyColumn === NONE && parsed
-          ? { ...state, counterpartyColumn: guessFormat(parsed.headers, []).counterpartyColumn ?? NONE }
-          : state;
-      setMapping(upgraded);
+      setMapping(stateFromFormat(f));
       setTrueDate(f.trueDate);
-      setMappingOpen(upgraded.counterpartyColumn !== state.counterpartyColumn);
+      setMappingOpen(false);
     }
   };
 
@@ -604,6 +607,18 @@ function StatementPane({ onDone }: { onDone: () => void }) {
         return { ...tx, ...(payee ? { payee } : {}), ...(e?.categoryId ? { categoryId: e.categoryId as Ulid } : {}) };
       });
       app.addTransactions(added);
+
+      // Learn only from CORRECTIONS. Accepting a suggested match teaches
+      // nothing — and the strings that carry a per-transaction id ("RIDECO.EU/O/
+      // 2607150000") would fill the list with keys that never recur.
+      for (const row of rows) {
+        const proposal = proposed.get(row.sourceRow);
+        const chosen = (edits.get(row.sourceRow)?.payee ?? proposal?.payee ?? row.payee).trim();
+        const key = technicalKey({ payee: row.payee, memo: row.memo });
+        if (!chosen || !key) continue;
+        if (proposal && chosen === proposal.payee) continue; // accepted, not corrected
+        app.rememberPayeeAlias(chosen, key);
+      }
     }
     if (result.parsedRows > 0) {
       // Matched card rows are verified, not paid — only the through-date

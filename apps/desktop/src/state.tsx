@@ -116,6 +116,10 @@ interface Actions {
   setClearedStatus: (ids: Ulid[], cleared: "cleared" | "uncleared" | "reconciled") => void;
   /** Rename every transaction with this exact payee. */
   renamePayee: (from: string, to: string) => void;
+  /** Record that a bank's technical string means this payee (minting it if new). */
+  rememberPayeeAlias: (name: string, alias: string) => void;
+  removePayeeAlias: (payeeId: Ulid, alias: string) => void;
+  deletePayee: (payeeId: Ulid) => void;
   /** Link imported rows that were always two halves of one transfer. */
   /**
    * Link imported rows that were always two halves of one transfer. Refuses and
@@ -238,7 +242,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const data = parseBudgetFile(contents); // throws on anything invalid
     // One-time cosmetic migration: imported transfer legs get the canonical
     // "Transfer to/from" payees. Idempotent — 0 changes on every later load.
-    const { budget: loaded, changed } = ops.normalizeTransferPayees(data.loaded);
+    const normalized = ops.normalizeTransferPayees(data.loaded);
+    // …and every payee spelling the transactions use gets a master-list entry,
+    // so the aliases that map a bank's naming onto yours have something to hang
+    // off. Also idempotent: 0 additions on every later load.
+    const synced = ops.syncPayees(normalized.budget);
+    const loaded = synced.budget;
+    const changed = normalized.changed + synced.added;
     filePathRef.current = path;
     fileMtimeRef.current = mtimeMs;
     formatsRef.current = data.savedFormats;
@@ -368,7 +378,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       if (!isTauri()) {
-        if (!cancelled) dispatch({ type: "set", budget: ops.normalizeTransferPayees(demoBudget()).budget });
+        if (!cancelled) dispatch({ type: "set", budget: ops.syncPayees(ops.normalizeTransferPayees(demoBudget()).budget).budget });
         return;
       }
       const repo = new BudgetRepository(new TauriFileSystem());
@@ -383,7 +393,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // First run on the single-file format: migrate legacy data if present;
         // on a truly fresh machine, ask create-or-open instead of assuming.
         if (app.activeBudgetId) {
-          const loaded = ops.normalizeTransferPayees(await repo.loadBudget(app.activeBudgetId)).budget;
+          const loaded = ops.syncPayees(ops.normalizeTransferPayees(await repo.loadBudget(app.activeBudgetId)).budget).budget;
           formatsRef.current = await repo.loadFormats().catch(() => []);
           sourcesRef.current = await repo.loadImportSources(app.activeBudgetId).catch(() => []);
           if (!cancelled) await followNewFileRef.current(loaded);
@@ -567,6 +577,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       approveTransactions: (ids) => apply((b) => ops.approveTransactions(b, ids)),
       setClearedStatus: (ids, cleared) => apply((b) => ops.setClearedStatus(b, ids, cleared)),
       renamePayee: (from, to) => apply((b) => ops.renamePayee(b, from, to)),
+      rememberPayeeAlias: (name, alias) => apply((b) => ops.rememberPayeeAlias(b, name, alias)),
+      removePayeeAlias: (payeeId, alias) => apply((b) => ops.removePayeeAlias(b, payeeId, alias)),
+      deletePayee: (payeeId) => apply((b) => ops.deletePayee(b, payeeId)),
       linkTransfers: (pairs) => {
         const before = budgetRef.current;
         const drift = applyBulk("link-transfers", (b) => ops.linkTransfers(b, pairs).budget, { preservesNumbers: true });

@@ -117,4 +117,28 @@ describe("mergeBudgetFiles (three-way)", () => {
     const tied = mergeBudgetFiles(base, ours, theirs);
     expect(tied.merged.loaded.budget.name).toBe("Ours");
   });
+
+  it("unions payee aliases learned on both machines", () => {
+    const withPayees = (aliases: string[], name = "Northwind") => {
+      const d = file([tx("T1")]);
+      return { ...d, loaded: { ...d.loaded, payees: [{ id: f.tid("PNorthwind"), name, aliases }] } };
+    };
+    const base = withPayees(["as northwind bank"]);
+    const ours = withPayees(["as northwind bank", "northwind insurance"]);
+    const theirs = withPayees(["as northwind bank", "northwind bank tallinn"]);
+
+    const { merged } = mergeBudgetFiles(base, ours, theirs);
+    expect([...merged.loaded.payees![0]!.aliases].sort()).toEqual([
+      "as northwind bank",
+      "northwind bank tallinn",
+      "northwind insurance",
+    ]);
+
+    // A rename still resolves this-computer-wins, and the aliases survive it.
+    const renamedHere = withPayees(["as northwind bank"], "Northwind Bank");
+    const renamedThere = withPayees(["as northwind bank", "learned there"], "Northwind Bank");
+    const both = mergeBudgetFiles(base, renamedHere, renamedThere).merged;
+    expect(both.loaded.payees![0]!.name).toBe("Northwind Bank");
+    expect([...both.loaded.payees![0]!.aliases].sort()).toEqual(["as northwind bank", "learned there"]);
+  });
 });

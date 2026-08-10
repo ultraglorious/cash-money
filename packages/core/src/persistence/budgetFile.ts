@@ -6,6 +6,7 @@ import {
   CategoryGroupSchema,
   CategorySchema,
   MonthlyAssignmentSchema,
+  PayeeSchema,
   TransactionSchema,
 } from "../model/schema.js";
 import { RegisterFormatSchema } from "../import/format.js";
@@ -55,6 +56,7 @@ const BudgetFileSchema = z.object({
   categories: z.array(CategorySchema),
   assignments: z.array(MonthlyAssignmentSchema),
   transactions: z.array(TransactionSchema),
+  payees: z.array(PayeeSchema).default([]),
   savedFormats: z.array(SavedFormatSchema).default([]),
   importSources: z.array(ImportSourceEntrySchema).default([]),
 });
@@ -70,6 +72,7 @@ export function serializeBudgetFile(data: BudgetFileData, savedAt: string): stri
     categories: byId(loaded.categories),
     assignments: byId(loaded.assignments),
     transactions: byId(loaded.transactions),
+    payees: byId(loaded.payees ?? []),
     savedFormats: data.savedFormats,
     importSources: data.importSources,
   });
@@ -104,6 +107,7 @@ export function parseBudgetFile(text: string): BudgetFileData {
       categories: f.categories,
       assignments: f.assignments,
       transactions: f.transactions,
+      payees: f.payees,
     } as LoadedBudget,
     savedFormats: f.savedFormats as SavedFormat[],
     importSources: f.importSources as ImportSourceEntry[],

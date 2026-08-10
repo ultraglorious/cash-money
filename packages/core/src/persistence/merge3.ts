@@ -1,4 +1,4 @@
-import type { Transaction } from "../model/types.js";
+import type { Payee, Transaction } from "../model/types.js";
 import { stableJson } from "./serialize.js";
 import type { BudgetFileData } from "./budgetFile.js";
 
@@ -40,6 +40,23 @@ export function reportTookFromFile(r: MergeReport): boolean {
 }
 
 const eq = (a: unknown, b: unknown): boolean => stableJson(a) === stableJson(b);
+
+/**
+ * Payees merge by id like everything else, EXCEPT their aliases, which are a
+ * growing set rather than a value: an alias learned on the laptop and another
+ * learned on the desktop are both true, and ours-wins would silently drop one.
+ * Union them, then let the ordinary rules settle the name.
+ */
+function mergePayees(base: readonly Payee[], ours: readonly Payee[], theirs: readonly Payee[], report: MergeReport): Payee[] {
+  const theirsById = new Map(theirs.map((p) => [p.id, p]));
+  const merged = mergeCollection(base, ours, theirs, (p) => p.id, report);
+  return merged.map((p) => {
+    const other = theirsById.get(p.id);
+    if (!other) return p;
+    const aliases = [...new Set([...p.aliases, ...other.aliases])];
+    return aliases.length === p.aliases.length ? p : { ...p, aliases };
+  });
+}
 
 function mergeCollection<T>(
   base: readonly T[],
@@ -150,6 +167,7 @@ export function mergeBudgetFiles(
         mergeCollection(base.loaded.transactions, ours.loaded.transactions, theirs.loaded.transactions, byId, report),
         report,
       ),
+      payees: mergePayees(base.loaded.payees ?? [], ours.loaded.payees ?? [], theirs.loaded.payees ?? [], report),
     },
     savedFormats: mergeCollection(base.savedFormats, ours.savedFormats, theirs.savedFormats, (f) => f.format.id, report),
     importSources: mergeCollection(base.importSources, ours.importSources, theirs.importSources, (s) => s.accountId, report),

@@ -96,7 +96,6 @@ const ImportProvenanceSchema = z.object({
   identity: fingerprint,
   firstSeenExportTs: z.string(),
   lastSeenExportTs: z.string(),
-  counterparty: fingerprint.optional(),
 });
 
 export const TransactionSchema = z.object({
@@ -123,6 +122,12 @@ export const TransactionSchema = z.object({
 });
 
 /** Shape of app.json — the index of budgets. Kept here with the other parse boundaries. */
+export const PayeeSchema = z.object({
+  id: ulid,
+  name: z.string(),
+  aliases: z.array(z.string()).default([]),
+});
+
 export const AppIndexSchema = z.object({
   schemaVersion: z.number().int(),
   activeBudgetId: ulid.optional(),
