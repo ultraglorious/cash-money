@@ -105,7 +105,7 @@ interface Actions {
   /** Record money moving between two accounts (creates both linked legs). */
   addTransfer: (args: ops.TransferArgs) => void;
   /** Edit one transfer leg; the other mirrors (amount/date/memo/accounts). */
-  updateTransfer: (id: Ulid, patch: { accountId?: Ulid; counterAccountId?: Ulid; date?: string; amount?: Cents; memo?: string; cleared?: "cleared" | "uncleared" | "reconciled"; categoryId?: Ulid }) => void;
+  updateTransfer: (id: Ulid, patch: { accountId?: Ulid; counterAccountId?: Ulid; date?: string; amount?: Cents; memo?: string; cleared?: "cleared" | "uncleared" | "reconciled"; categoryId?: Ulid; recurrence?: Transaction["recurrence"] }) => void;
   setTransactions: (txs: Transaction[]) => void;
   updateTransaction: (id: Ulid, patch: Partial<Omit<Transaction, "id">>) => void;
   deleteTransaction: (id: Ulid) => void;

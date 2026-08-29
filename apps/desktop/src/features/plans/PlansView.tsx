@@ -539,6 +539,9 @@ const SUGGESTION_LABEL: Record<AssignSuggestionKey, (s: AssignSuggestion) => str
   spentLastMonth: () => "Spent last month",
   averageAssigned: (s) => `Average assigned (${s.months} months)`,
   averageSpent: (s) => `Average spent (${s.months} months)`,
+  lastFunded: (s) => `Last funded, ${monthLabel(s.month!)}`,
+  typicalWhenFunded: (s) => `Typical when funded (${s.months} times)`,
+  spentLastTime: (s) => `Spent last time, ${monthLabel(s.month!)}`,
   resetAssigned: () => "Reset assigned",
   resetAvailable: () => "Reset available",
 };

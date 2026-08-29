@@ -217,6 +217,7 @@ export function TransactionsView() {
         clearedThis: legCleared(data.accountId),
         clearedCounter: legCleared(data.transferAccountId),
         categoryId: data.categoryId,
+        recurrence: data.recurrence,
       });
       setAdding(false);
       return;
@@ -254,6 +255,7 @@ export function TransactionsView() {
         memo: data.memo,
         cleared: data.cleared,
         categoryId: data.categoryId,
+        recurrence: data.recurrence,
       });
       setEditingId(null);
       return;
