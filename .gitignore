@@ -13,3 +13,7 @@ coverage/
 
 # Never commit real financial exports
 /.import/
+
+# Claude Code: share the skills, never the worktrees it creates in here
+/.claude/*
+!/.claude/skills/

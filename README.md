@@ -106,13 +106,14 @@ waiting if you only want to *use* the app. Build it once instead and launch it
 like anything else:
 
 ```bash
-npm run app:mac --workspace @cash-money/desktop   # ~1 min, installs to /Applications
+npm run app        # macOS: ~20s incrementally, then it's in /Applications
 ```
 
-That produces a debug bundle (fast to compile, indistinguishable in use for an
-app this size) and copies it to `/Applications`, so it opens from Spotlight or
-the Dock instantly. Re-run it whenever you want the newest code. A locally built
-app carries no download quarantine, so macOS opens it without complaint.
+That quits the app if it's running (politely, so it finishes saving), builds a
+debug bundle — fast to compile, indistinguishable in use for an app this size —
+copies it to `/Applications`, and reopens it. Run it again whenever you want the
+newest code. A locally built app carries no download quarantine, so macOS opens
+it without complaint.
 
 Don't run the installed app and `tauri dev` against the same budget file at the
 same time — both will write to it. The sync merge would sort it out, but there's
