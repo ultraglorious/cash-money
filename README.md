@@ -99,6 +99,25 @@ npm run dev --workspace @cash-money/desktop
 Only one dev server can run at a time (the port is fixed for Tauri). If you see
 "Port 5173 is already in use", stop the old one: `lsof -ti:5173 | xargs kill`.
 
+### Using it, rather than developing it
+
+`tauri dev` rebuilds and starts a dev server on every launch, which is a lot of
+waiting if you only want to *use* the app. Build it once instead and launch it
+like anything else:
+
+```bash
+npm run app:mac --workspace @cash-money/desktop   # ~1 min, installs to /Applications
+```
+
+That produces a debug bundle (fast to compile, indistinguishable in use for an
+app this size) and copies it to `/Applications`, so it opens from Spotlight or
+the Dock instantly. Re-run it whenever you want the newest code. A locally built
+app carries no download quarantine, so macOS opens it without complaint.
+
+Don't run the installed app and `tauri dev` against the same budget file at the
+same time — both will write to it. The sync merge would sort it out, but there's
+no reason to make it work.
+
 ---
 
 ## Key concepts
