@@ -11,7 +11,7 @@ import {
 } from "../model/schema.js";
 import { RegisterFormatSchema } from "../import/format.js";
 import { byId, stableJson } from "./serialize.js";
-import type { ImportSourceEntry, SavedFormat } from "./repository.js";
+import type { ImportSourceEntry, SavedFormat, SkippedRow } from "./repository.js";
 
 /**
  * The single-file budget container (`.cashmoney`): one self-contained JSON
@@ -30,6 +30,8 @@ export interface BudgetFileData {
   loaded: LoadedBudget;
   savedFormats: SavedFormat[];
   importSources: ImportSourceEntry[];
+  /** Rows left unticked on a previous import, so they arrive unticked again. */
+  skippedRows: SkippedRow[];
 }
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -46,6 +48,12 @@ const ImportSourceEntrySchema = z.object({
   lastUsed: isoDate.optional(),
 });
 
+const SkippedRowSchema = z.object({
+  identity: z.string(),
+  sourceKey: z.string(),
+  since: isoDate,
+});
+
 const BudgetFileSchema = z.object({
   fileVersion: z.number().int().min(1),
   /** Informational: when and by which app version the file was written. */
@@ -59,6 +67,7 @@ const BudgetFileSchema = z.object({
   payees: z.array(PayeeSchema).default([]),
   savedFormats: z.array(SavedFormatSchema).default([]),
   importSources: z.array(ImportSourceEntrySchema).default([]),
+  skippedRows: z.array(SkippedRowSchema).default([]),
 });
 
 export function serializeBudgetFile(data: BudgetFileData, savedAt: string): string {
@@ -75,6 +84,7 @@ export function serializeBudgetFile(data: BudgetFileData, savedAt: string): stri
     payees: byId(loaded.payees ?? []),
     savedFormats: data.savedFormats,
     importSources: data.importSources,
+    skippedRows: data.skippedRows,
   });
 }
 
@@ -111,5 +121,6 @@ export function parseBudgetFile(text: string): BudgetFileData {
     } as LoadedBudget,
     savedFormats: f.savedFormats as SavedFormat[],
     importSources: f.importSources as ImportSourceEntry[],
+    skippedRows: f.skippedRows as SkippedRow[],
   };
 }

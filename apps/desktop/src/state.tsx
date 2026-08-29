@@ -21,6 +21,7 @@ import {
   type MonthKey,
   type Projection,
   type SavedFormat,
+  type SkippedRow,
   type SplitLine,
   type Transaction,
   type Ulid,
@@ -145,6 +146,10 @@ interface Actions {
    * call also records the format used and the date, which is what lets the
    * wizard recall the right account + mapping next time.
    */
+  /** Rows you left unticked before — they arrive unticked again, never hidden. */
+  listSkippedRows: () => SkippedRow[];
+  /** Remember rows left unticked, and forget any taken this time round. */
+  recordSkippedRows: (skipped: readonly SkippedRow[], taken: readonly string[]) => void;
   statementSourceKey: (accountId: Ulid, formatId: string) => Promise<string>;
 
   /** Write the budget to a new .cashmoney path and follow it from now on. */
@@ -184,6 +189,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const fileMtimeRef = useRef<number | undefined>(undefined);
   const formatsRef = useRef<SavedFormat[]>([]);
   const sourcesRef = useRef<ImportSourceEntry[]>([]);
+  // Rows left unticked on an earlier import: they come back unticked and
+  // marked, never hidden — "not this time" is a default, not a deletion.
+  const skippedRef = useRef<SkippedRow[]>([]);
   const backedUpRef = useRef(false);
   // The budget as it stood before the last bulk edit, kept for undo. Session
   // scoped: a bulk edit you can no longer see on screen is the snapshot files'
@@ -218,7 +226,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           backedUpRef.current = true;
           await backupBudgetFile(path).catch(() => undefined);
         }
-        const data: BudgetFileData = { loaded: snapshot, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+        const data: BudgetFileData = { loaded: snapshot, savedFormats: formatsRef.current, importSources: sourcesRef.current, skippedRows: skippedRef.current };
         const text = serializeBudgetFile(data, new Date().toISOString());
         fileMtimeRef.current = await writeBudgetFile(path, text, fileMtimeRef.current);
         baseRef.current = data;
@@ -253,6 +261,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fileMtimeRef.current = mtimeMs;
     formatsRef.current = data.savedFormats;
     sourcesRef.current = data.importSources;
+    skippedRef.current = data.skippedRows;
     baseRef.current = { ...data, loaded };
     pendingRef.current = null;
     backedUpRef.current = false;
@@ -279,7 +288,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const { contents, mtimeMs } = await readBudgetFile(path);
       const theirs = parseBudgetFile(contents);
-      const ours: BudgetFileData = { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+      const ours: BudgetFileData = { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current, skippedRows: skippedRef.current };
       const base = baseRef.current ?? theirs; // no base (shouldn't happen): treat the file as base
       const { merged, report } = mergeBudgetFiles(base, ours, theirs);
 
@@ -294,6 +303,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       formatsRef.current = merged.savedFormats;
       sourcesRef.current = merged.importSources;
+      skippedRef.current = merged.skippedRows;
       pendingRef.current = null;
       skipPersistRef.current = true; // we persist the merge explicitly below
       dispatch({ type: "set", budget: merged.loaded });
@@ -335,7 +345,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const { appDataDir, join } = await import("@tauri-apps/api/path");
     const path = await join(await appDataDir(), budgetFileName(loaded.budget.name));
     const text = serializeBudgetFile(
-      { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current },
+      { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current, skippedRows: skippedRef.current },
       new Date().toISOString(),
     );
     const mtime = await writeBudgetFile(path, text);
@@ -344,7 +354,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     filePathRef.current = path;
     fileMtimeRef.current = mtime;
     backedUpRef.current = true; // just written; nothing older to preserve
-    baseRef.current = { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+    baseRef.current = { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current, skippedRows: skippedRef.current };
     skipPersistRef.current = true;
     setFilePath(path);
     setNeedsSetup(false);
@@ -396,6 +406,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const loaded = ops.syncPayees(ops.normalizeTransferPayees(await repo.loadBudget(app.activeBudgetId)).budget).budget;
           formatsRef.current = await repo.loadFormats().catch(() => []);
           sourcesRef.current = await repo.loadImportSources(app.activeBudgetId).catch(() => []);
+          skippedRef.current = [];
           if (!cancelled) await followNewFileRef.current(loaded);
         } else if (!cancelled) {
           setNeedsSetup(true);
@@ -607,6 +618,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       },
       listStatementSources: () =>
         Promise.resolve([...sourcesRef.current].sort((a, b) => (b.lastUsed ?? "").localeCompare(a.lastUsed ?? ""))),
+      listSkippedRows: () => [...skippedRef.current],
+      recordSkippedRows: (skipped, taken) => {
+        const drop = new Set(taken);
+        const known = new Set(skippedRef.current.map((r) => r.identity));
+        skippedRef.current = [
+          ...skippedRef.current.filter((r) => !drop.has(r.identity)),
+          ...skipped.filter((r) => !known.has(r.identity) && !drop.has(r.identity)),
+        ];
+        scheduleSave();
+      },
       statementSourceKey: async (accountId, formatId) => {
         if (!isTauri()) return `stmt:${accountId}`; // browser preview: nothing persists
         const lastUsed = new Date().toISOString().slice(0, 10);
@@ -626,7 +647,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const b = budgetRef.current;
         const repo = repoRef.current;
         if (!b || !repo) throw new Error("No budget loaded");
-        const data: BudgetFileData = { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+        const data: BudgetFileData = { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current, skippedRows: skippedRef.current };
         const text = serializeBudgetFile(data, new Date().toISOString());
         const mtime = await writeBudgetFile(newPath, text); // save dialog already confirmed any overwrite
         const app = await repo.loadApp();

@@ -31,6 +31,7 @@ function sample(): BudgetFileData {
       },
     ],
     importSources: [{ accountId: ACC, formatId: "fmt1", sourceKey: "src1", lastUsed: "2026-08-06" }],
+    skippedRows: [],
   };
 }
 

@@ -171,6 +171,9 @@ export function mergeBudgetFiles(
     },
     savedFormats: mergeCollection(base.savedFormats, ours.savedFormats, theirs.savedFormats, (f) => f.format.id, report),
     importSources: mergeCollection(base.importSources, ours.importSources, theirs.importSources, (s) => s.accountId, report),
+    // Skips are a growing set, like payee aliases: a row skipped on either
+    // machine was skipped, so additions from both sides are kept.
+    skippedRows: mergeCollection(base.skippedRows, ours.skippedRows, theirs.skippedRows, (r) => r.identity, report),
   };
   return { merged, report };
 }

@@ -18,6 +18,7 @@ import {
   Stack,
   Table,
   Text,
+  Tooltip,
   TextInput,
   Title,
 } from "@mantine/core";
@@ -409,6 +410,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   // What the app suggested each row was called, so a correction can be told
   // apart from an acceptance — only corrections are worth remembering.
   const [proposed, setProposed] = useState<Map<number, ProposedName>>(new Map());
+  const [previouslySkipped, setPreviouslySkipped] = useState<Set<number>>(new Set());
   const [coverageOn, setCoverageOn] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -459,7 +461,12 @@ function StatementPane({ onDone }: { onDone: () => void }) {
         currency: app.currency,
       });
       setResult(r);
-      setSelected(new Set(r.toAdd.map((row) => row.sourceRow))); // all checked by default
+      // Everything is ticked except the rows you left unticked before. They are
+      // still listed and still tickable — skipping is a default for next time,
+      // not a disappearance.
+      const skippedBefore = new Set(app.listSkippedRows().map((x) => x.identity));
+      setPreviouslySkipped(new Set(r.toAdd.filter((row) => skippedBefore.has(row.identity)).map((row) => row.sourceRow)));
+      setSelected(new Set(r.toAdd.filter((row) => !skippedBefore.has(row.identity)).map((row) => row.sourceRow)));
       // Rows the bank didn't name arrive blank, which is unreadable without the
       // statement open beside you. Seed each row with the best name available —
       // what this counterparty or this description was called last time, or the
@@ -633,6 +640,17 @@ function StatementPane({ onDone }: { onDone: () => void }) {
         if (newly.length > 0) app.setClearedStatus(newly, "reconciled");
       }
     }
+    // What you left unticked becomes next time's default; what you ticked stops
+    // being one. Neither hides anything: both sides of the decision are just a
+    // starting position for the next statement that covers these days.
+    const today2 = today();
+    app.recordSkippedRows(
+      result.toAdd
+        .filter((r) => !selected.has(r.sourceRow))
+        .map((r) => ({ identity: r.identity, sourceKey, since: today2 })),
+      rows.map((r) => r.identity),
+    );
+
     app.setView({ kind: "account", accountId: accId });
     onDone();
   };
@@ -717,6 +735,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
           selected={selected}
           setSelected={setSelected}
           edits={edits}
+          previouslySkipped={previouslySkipped}
           setEdits={setEdits}
           isCard={isCard}
           coverage={coverage}
@@ -730,7 +749,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ReconcileView({ result, currency, accountName, categoryData, unclaimed, selected, setSelected, edits, setEdits, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
+function ReconcileView({ result, currency, accountName, categoryData, unclaimed, selected, setSelected, edits, setEdits, previouslySkipped, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
   result: StatementReconcile;
   currency: CurrencyConfig;
   accountName: string;
@@ -739,6 +758,8 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
   selected: Set<number>;
   setSelected: (s: Set<number>) => void;
   edits: Map<number, RowEdit>;
+  /** Rows you left unticked last time — unticked again, and said so. */
+  previouslySkipped: Set<number>;
   setEdits: (e: Map<number, RowEdit>) => void;
   isCard: boolean;
   coverage: InvoiceCoverage | null;
@@ -833,7 +854,16 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
               {result.toAdd.map((r) => (
                 <Table.Tr key={r.sourceRow}>
                   <Table.Td><Checkbox checked={selected.has(r.sourceRow)} onChange={() => toggle(r.sourceRow)} aria-label="Include row" /></Table.Td>
-                  <Table.Td><Text size="sm">{r.date}</Text></Table.Td>
+                  <Table.Td>
+                    <Group gap={6} wrap="nowrap">
+                      <Text size="sm">{r.date}</Text>
+                      {previouslySkipped.has(r.sourceRow) && (
+                        <Tooltip label="You left this out of an earlier import, so it starts unticked. Tick it to bring it in." withArrow>
+                          <Badge size="xs" color="gray" variant="light">skipped before</Badge>
+                        </Tooltip>
+                      )}
+                    </Group>
+                  </Table.Td>
                   <Table.Td>
                     <TextInput
                       size="xs"

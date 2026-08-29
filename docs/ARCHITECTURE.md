@@ -314,6 +314,20 @@ guarded by the file's last-seen mtime, and flushed before the window closes. In
 a plain browser the store is seeded with a synthetic demo budget (`demo.ts`) so
 the UI renders without any real data or persistence.
 
+## Skipping a statement row
+
+Some rows on a statement you deliberately don't take: something tracked
+elsewhere, something already recorded by hand in a way the matcher can't see.
+Overlapping date ranges mean the next import offers them again, and without a
+memory the only way to know a row was already dismissed is to re-investigate it.
+
+So an unticked row is remembered — by its import identity, the same key the
+reconciler's identity pass uses — and arrives unticked and marked *skipped
+before* next time. It is not hidden and not deleted: the decision is a starting
+position, and ticking it imports it and forgets the skip. `skippedRows` lives
+beside the saved formats in the budget file and merges as a union, since a row
+skipped on either machine was skipped.
+
 ## Keeping private data out (`.githooks/`)
 
 The repository is public; the budget it manages is not. Real statements are the
