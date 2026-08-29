@@ -314,6 +314,29 @@ guarded by the file's last-seen mtime, and flushed before the window closes. In
 a plain browser the store is seeded with a synthetic demo budget (`demo.ts`) so
 the UI renders without any real data or persistence.
 
+## Keeping private data out (`.githooks/`)
+
+The repository is public; the budget it manages is not. Real statements are the
+best evidence for how import should behave, which makes it easy to paste a real
+bank, employer or account number into a test fixture or a commit message while
+reasoning from them — the *shape* is what a test needs, and the identity comes
+along for free.
+
+So it's enforced rather than remembered. `git config core.hooksPath .githooks`
+(run once per clone) installs a `pre-commit` and `commit-msg` pair that scan
+added lines and the message, and refuse the commit on a match. Two kinds of
+pattern:
+
+- **shapes**, in the hook itself, because a shape names nobody: anything
+  IBAN-like, and card masks. The published placeholders used in the tests
+  (`GB29NWBK60161331926819`, `(..1234)`) are allowed through, so the rule can't
+  block the invented values it exists to encourage.
+- **names**, in `$GIT_COMMON_DIR/private-patterns`, one regex per line —
+  deliberately *outside* the repo, since a list of what must not be published is
+  itself the thing not to publish. A fresh clone starts without it; recreate it.
+
+`git commit --no-verify` bypasses both when you mean to.
+
 ## Testing
 
 - **Unit + property tests** in `packages/core` (money round-trips, the envelope
