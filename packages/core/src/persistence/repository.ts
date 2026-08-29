@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { newId, type Ulid } from "../ids.js";
+import { newId, type Fingerprint, type Ulid } from "../ids.js";
 import { monthKeyOf, type ISODate, type MonthKey } from "../time.js";
 import { RegisterFormatSchema, type RegisterFormat } from "../import/format.js";
 import {
@@ -76,6 +76,22 @@ export interface ImportSourceEntry {
   sourceKey: string;
   /** Last time a statement was reconciled into this account (drives recall). */
   lastUsed?: ISODate;
+}
+
+/**
+ * A statement row you left unticked when importing.
+ *
+ * Not a deletion and not a hide: the row still appears next time, just unticked
+ * and marked, so a decision already made doesn't have to be investigated again.
+ * Keyed by the row's stable import identity, the same key the reconciler uses
+ * to recognise rows a previous import committed.
+ */
+export interface SkippedRow {
+  identity: Fingerprint;
+  /** Which statement source it came from, for context in the wizard. */
+  sourceKey: string;
+  /** When it was first left behind. */
+  since: ISODate;
 }
 
 interface CategoriesFile {

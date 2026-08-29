@@ -18,6 +18,7 @@ import {
   Stack,
   Table,
   Text,
+  Tooltip,
   TextInput,
   Title,
 } from "@mantine/core";
@@ -30,6 +31,9 @@ import {
   deduceInvoiceCoverage,
   findTransferCandidates,
   formatFitsHeaders,
+  lastCategoryByPayee,
+  nameIncomingRow,
+  technicalKey,
   guessFormat,
   mergeImport,
   newId,
@@ -40,6 +44,7 @@ import {
   type ImportConfig,
   type InvoiceCoverage,
   type RegisterFormat,
+  type ProposedName,
   type SavedFormat,
   type StagingResult,
   type StatementReconcile,
@@ -402,6 +407,10 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   const [result, setResult] = useState<StatementReconcile | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set()); // sourceRow keys
   const [edits, setEdits] = useState<Map<number, RowEdit>>(new Map());
+  // What the app suggested each row was called, so a correction can be told
+  // apart from an acceptance — only corrections are worth remembering.
+  const [proposed, setProposed] = useState<Map<number, ProposedName>>(new Map());
+  const [previouslySkipped, setPreviouslySkipped] = useState<Set<number>>(new Set());
   const [coverageOn, setCoverageOn] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -452,8 +461,33 @@ function StatementPane({ onDone }: { onDone: () => void }) {
         currency: app.currency,
       });
       setResult(r);
-      setSelected(new Set(r.toAdd.map((row) => row.sourceRow))); // all checked by default
-      setEdits(new Map());
+      // Everything is ticked except the rows you left unticked before. They are
+      // still listed and still tickable — skipping is a default for next time,
+      // not a disappearance.
+      const skippedBefore = new Set(app.listSkippedRows().map((x) => x.identity));
+      setPreviouslySkipped(new Set(r.toAdd.filter((row) => skippedBefore.has(row.identity)).map((row) => row.sourceRow)));
+      setSelected(new Set(r.toAdd.filter((row) => !skippedBefore.has(row.identity)).map((row) => row.sourceRow)));
+      // Rows the bank didn't name arrive blank, which is unreadable without the
+      // statement open beside you. Seed each row with the best name available —
+      // what this counterparty or this description was called last time, or the
+      // description itself cleaned up — and the category that name usually gets.
+      // These are seeds in an editable field, not decisions.
+      const categories = lastCategoryByPayee(app.budget);
+      const payees = app.budget.payees ?? [];
+      const seeded = new Map<number, RowEdit>();
+      const named = new Map<number, ProposedName>();
+      for (const row of r.toAdd) {
+        const proposal = nameIncomingRow({ payee: row.payee, memo: row.memo }, payees, categories);
+        named.set(row.sourceRow, proposal);
+        if (proposal.payee !== row.payee || proposal.categoryId) {
+          seeded.set(row.sourceRow, {
+            payee: proposal.payee,
+            ...(proposal.categoryId ? { categoryId: proposal.categoryId } : {}),
+          });
+        }
+      }
+      setProposed(named);
+      setEdits(seeded);
     } catch (e) {
       setError(String(e));
       setResult(null);
@@ -556,7 +590,14 @@ function StatementPane({ onDone }: { onDone: () => void }) {
         await app.saveFormats([...saved, { format: durable, lastUsed: today() }]).catch(() => undefined);
       }
     } else {
-      await app.saveFormats(saved.map((s) => (s.format.id === formatChoice ? { ...s, lastUsed: today() } : s))).catch(() => undefined);
+      // Edits to a chosen mapping are saved back to it. They used to apply to
+      // the import in hand and then vanish, so adding a column meant either
+      // re-doing it every time or accumulating near-duplicate mappings.
+      const previous = saved.find((s) => s.format.id === formatChoice)?.format;
+      durable = { ...durable, name: previous?.name ?? durable.name };
+      await app
+        .saveFormats(saved.map((s) => (s.format.id === formatChoice ? { format: durable, lastUsed: today() } : s)))
+        .catch(() => undefined);
     }
     const sourceKey = await app.statementSourceKey(accId, durable.id);
 
@@ -573,6 +614,18 @@ function StatementPane({ onDone }: { onDone: () => void }) {
         return { ...tx, ...(payee ? { payee } : {}), ...(e?.categoryId ? { categoryId: e.categoryId as Ulid } : {}) };
       });
       app.addTransactions(added);
+
+      // Learn only from CORRECTIONS. Accepting a suggested match teaches
+      // nothing — and the strings that carry a per-transaction id ("RIDECO.EU/O/
+      // 2607150000") would fill the list with keys that never recur.
+      for (const row of rows) {
+        const proposal = proposed.get(row.sourceRow);
+        const chosen = (edits.get(row.sourceRow)?.payee ?? proposal?.payee ?? row.payee).trim();
+        const key = technicalKey({ payee: row.payee, memo: row.memo });
+        if (!chosen || !key) continue;
+        if (proposal && chosen === proposal.payee) continue; // accepted, not corrected
+        app.rememberPayeeAlias(chosen, key);
+      }
     }
     if (result.parsedRows > 0) {
       // Matched card rows are verified, not paid — only the through-date
@@ -587,6 +640,17 @@ function StatementPane({ onDone }: { onDone: () => void }) {
         if (newly.length > 0) app.setClearedStatus(newly, "reconciled");
       }
     }
+    // What you left unticked becomes next time's default; what you ticked stops
+    // being one. Neither hides anything: both sides of the decision are just a
+    // starting position for the next statement that covers these days.
+    const today2 = today();
+    app.recordSkippedRows(
+      result.toAdd
+        .filter((r) => !selected.has(r.sourceRow))
+        .map((r) => ({ identity: r.identity, sourceKey, since: today2 })),
+      rows.map((r) => r.identity),
+    );
+
     app.setView({ kind: "account", accountId: accId });
     onDone();
   };
@@ -596,7 +660,10 @@ function StatementPane({ onDone }: { onDone: () => void }) {
     ...saved.map((s) => ({ value: s.format.id, label: s.format.name })),
   ];
   const canPreview = Boolean(parsed && accountId && mappingComplete(mapping));
-  const categoryData = categoryOptions(app.budget);
+  // Only the envelopes of the household whose account this is: filing a row
+  // against another household's envelope moves money that never moved.
+  const importAccount = app.budget.accounts.find((a) => a.id === accountId);
+  const categoryData = categoryOptions(app.budget, importAccount ? { household: importAccount.household } : undefined);
   const unclaimedTxs = result
     ? result.unclaimedBudget.map((id) => app.budget.transactions.find((t) => t.id === id)).filter((t): t is Transaction => !!t)
     : [];
@@ -629,9 +696,14 @@ function StatementPane({ onDone }: { onDone: () => void }) {
             />
             <Select label="Column mapping" data={formatOptions} value={formatChoice} onChange={chooseFormat} allowDeselect={false} />
           </Group>
-          <Anchor size="xs" component="button" type="button" onClick={() => setMappingOpen((o) => !o)}>
-            {mappingOpen ? "Hide column mapping" : "Adjust column mapping…"}
-          </Anchor>
+          <Group gap="xs">
+            <Anchor size="xs" component="button" type="button" onClick={() => setMappingOpen((o) => !o)}>
+              {mappingOpen ? "Hide column mapping" : "Adjust column mapping…"}
+            </Anchor>
+            {formatChoice !== NEW_MAPPING && (
+              <Text size="xs" c="dimmed">— changes are saved back to this mapping</Text>
+            )}
+          </Group>
           <Collapse in={mappingOpen}>
             <Stack gap="sm">
               <FormatMappingForm headers={parsed.headers} value={mapping} onChange={(m) => { setMapping(m); setResult(null); setRecalled(false); }} />
@@ -663,6 +735,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
           selected={selected}
           setSelected={setSelected}
           edits={edits}
+          previouslySkipped={previouslySkipped}
           setEdits={setEdits}
           isCard={isCard}
           coverage={coverage}
@@ -676,7 +749,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ReconcileView({ result, currency, accountName, categoryData, unclaimed, selected, setSelected, edits, setEdits, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
+function ReconcileView({ result, currency, accountName, categoryData, unclaimed, selected, setSelected, edits, setEdits, previouslySkipped, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
   result: StatementReconcile;
   currency: CurrencyConfig;
   accountName: string;
@@ -685,6 +758,8 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
   selected: Set<number>;
   setSelected: (s: Set<number>) => void;
   edits: Map<number, RowEdit>;
+  /** Rows you left unticked last time — unticked again, and said so. */
+  previouslySkipped: Set<number>;
   setEdits: (e: Map<number, RowEdit>) => void;
   isCard: boolean;
   coverage: InvoiceCoverage | null;
@@ -779,7 +854,16 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
               {result.toAdd.map((r) => (
                 <Table.Tr key={r.sourceRow}>
                   <Table.Td><Checkbox checked={selected.has(r.sourceRow)} onChange={() => toggle(r.sourceRow)} aria-label="Include row" /></Table.Td>
-                  <Table.Td><Text size="sm">{r.date}</Text></Table.Td>
+                  <Table.Td>
+                    <Group gap={6} wrap="nowrap">
+                      <Text size="sm">{r.date}</Text>
+                      {previouslySkipped.has(r.sourceRow) && (
+                        <Tooltip label="You left this out of an earlier import, so it starts unticked. Tick it to bring it in." withArrow>
+                          <Badge size="xs" color="gray" variant="light">skipped before</Badge>
+                        </Tooltip>
+                      )}
+                    </Group>
+                  </Table.Td>
                   <Table.Td>
                     <TextInput
                       size="xs"

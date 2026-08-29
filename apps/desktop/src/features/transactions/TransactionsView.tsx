@@ -73,8 +73,10 @@ export function TransactionsView() {
     return true;
   };
 
+  // The master list already holds every payee spelling (ops.syncPayees runs on
+  // load), so there's no need to walk thousands of transactions for it.
   const payees = useMemo(
-    () => [...new Set(budget.transactions.filter((t) => !t.transfer).map((t) => t.payee).filter((p) => p.trim() && !p.startsWith("Transfer :")))].sort(),
+    () => (budget.payees ?? []).map((p) => p.name).filter((p) => p.trim() && !p.startsWith("Transfer :")).sort(),
     [budget],
   );
   const lastCatByPayee = useMemo(() => {
@@ -85,7 +87,10 @@ export function TransactionsView() {
     return m;
   }, [budget]);
 
-  const categoryData = categoryOptions(budget);
+  const categoryDataFor = (id: Ulid | null) => {
+    const acc = id ? budget.accounts.find((a) => a.id === id) : undefined;
+    return categoryOptions(budget, acc ? { household: acc.household } : undefined);
+  };
   const incomeData = incomeCategoryOptions(budget);
   const accountData = budget.accounts.map((a) => ({ value: a.id, label: a.name, household: a.household, onBudget: a.onBudget }));
 
@@ -367,7 +372,7 @@ export function TransactionsView() {
               const due = t.date <= todayIso();
               if (editingId === t.id && !t.splits) {
                 return (
-                  <EditorRow key={t.id} single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} incomeData={incomeData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
+                  <EditorRow key={t.id} single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryDataFor={categoryDataFor} incomeData={incomeData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
                 );
               }
               return (
@@ -440,7 +445,7 @@ export function TransactionsView() {
       </Box>
 
       {adding && (
-        <EditorRow single={single} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} incomeData={incomeData} accountData={accountData} onSubmit={addFromEditor} onCancel={() => setAdding(false)} />
+        <EditorRow single={single} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryDataFor={categoryDataFor} incomeData={incomeData} accountData={accountData} onSubmit={addFromEditor} onCancel={() => setAdding(false)} />
       )}
 
       <div ref={parentRef} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
@@ -451,7 +456,7 @@ export function TransactionsView() {
             return (
               <div key={t.id} ref={virt.measureElement} data-index={vi.index} style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vi.start}px)` }}>
                 {editing ? (
-                  <EditorRow single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryData={categoryData} incomeData={incomeData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
+                  <EditorRow single={single} initial={t} payees={payees} lastCategoryOf={(p) => lastCatByPayee.get(p)} categoryDataFor={categoryDataFor} incomeData={incomeData} accountData={accountData} onSubmit={(d) => saveEdit(t, d)} onCancel={() => setEditingId(null)} />
                 ) : (
                   <Box
                     onDoubleClick={() => !t.splits && setEditingId(t.id)}
@@ -500,6 +505,7 @@ export function TransactionsView() {
         opened={!!splitting}
         onClose={() => setSplitting(null)}
         amount={splitting?.amount ?? (0 as Cents)}
+        accountId={splitting?.accountId ?? null}
         initialSplits={splitting?.splits}
         onSave={(splits) => { if (splitting) setSplits(splitting.id, splits); setSplitting(null); }}
         onUnsplit={splitting?.splits ? () => { setSplits(splitting.id, undefined, splitting.splits?.[0]?.categoryId); setSplitting(null); } : undefined}

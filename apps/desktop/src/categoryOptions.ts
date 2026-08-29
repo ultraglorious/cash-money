@@ -10,9 +10,19 @@ export interface GroupedCategoryOptions {
  * they double as React keys inside Mantine's dropdown — and two households
  * routinely have same-named sections ("Everyday Expenses"), so collisions get
  * the household appended (and a counter as the last resort).
+ *
+ * Pass `scope` to offer only one household's envelopes. That isn't tidiness:
+ * a row in a Personal account filed against a Joint envelope spends Joint's
+ * money while Personal's cash left, so both households' Ready-to-Assign end up
+ * wrong. A category belongs to the household whose money moved.
  */
-export function categoryOptions(budget: LoadedBudget): GroupedCategoryOptions[] {
-  const groups = budget.groups.filter((g) => g.kind !== "income");
+export function categoryOptions(
+  budget: LoadedBudget,
+  scope?: { household: string | undefined },
+): GroupedCategoryOptions[] {
+  const groups = budget.groups.filter(
+    (g) => g.kind !== "income" && (!scope || g.household === scope.household),
+  );
   const nameCount = new Map<string, number>();
   for (const g of groups) nameCount.set(g.name, (nameCount.get(g.name) ?? 0) + 1);
 

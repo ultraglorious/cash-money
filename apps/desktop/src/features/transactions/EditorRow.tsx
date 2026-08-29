@@ -53,7 +53,7 @@ export function EditorRow({
   initial,
   payees,
   lastCategoryOf,
-  categoryData,
+  categoryDataFor,
   incomeData,
   accountData,
   onSubmit,
@@ -63,7 +63,8 @@ export function EditorRow({
   initial?: Transaction;
   payees: string[];
   lastCategoryOf: (payee: string) => Ulid | undefined;
-  categoryData: GroupedOption[];
+  /** The envelopes offered for a given account — one household's, never all. */
+  categoryDataFor: (accountId: Ulid | null) => GroupedOption[];
   incomeData: { value: string; label: string; household?: string }[];
   accountData: { value: string; label: string; household?: string; onBudget?: boolean }[];
   onSubmit: (data: EditorSubmit) => void;
@@ -117,6 +118,7 @@ export function EditorRow({
   // the category blank must never be the way money silently leaves the pool.
   const household = accOf(accountId)?.household;
   const unbudgeted = incomeData.filter((c) => c.household === household).map(({ value, label }) => ({ value, label }));
+  const categoryData = categoryDataFor(accountId as Ulid | null);
   const pickerData: GroupedOption[] = unbudgeted.length
     ? [{ group: "Unbudgeted money", items: unbudgeted }, ...categoryData]
     : categoryData;
@@ -271,6 +273,7 @@ export function EditorRow({
         opened={splitOpen}
         onClose={splitCtrl.close}
         amount={signedMagnitude()}
+        accountId={accountId as Ulid | null}
         initialSplits={splits ?? undefined}
         onSave={(s) => { setSplits(s); setCategoryId(null); splitCtrl.close(); }}
         onUnsplit={splits ? () => { setSplits(null); splitCtrl.close(); } : undefined}

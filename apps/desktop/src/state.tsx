@@ -21,6 +21,7 @@ import {
   type MonthKey,
   type Projection,
   type SavedFormat,
+  type SkippedRow,
   type SplitLine,
   type Transaction,
   type Ulid,
@@ -116,6 +117,10 @@ interface Actions {
   setClearedStatus: (ids: Ulid[], cleared: "cleared" | "uncleared" | "reconciled") => void;
   /** Rename every transaction with this exact payee. */
   renamePayee: (from: string, to: string) => void;
+  /** Record that a bank's technical string means this payee (minting it if new). */
+  rememberPayeeAlias: (name: string, alias: string) => void;
+  removePayeeAlias: (payeeId: Ulid, alias: string) => void;
+  deletePayee: (payeeId: Ulid) => void;
   /** Link imported rows that were always two halves of one transfer. */
   /**
    * Link imported rows that were always two halves of one transfer. Refuses and
@@ -141,6 +146,10 @@ interface Actions {
    * call also records the format used and the date, which is what lets the
    * wizard recall the right account + mapping next time.
    */
+  /** Rows you left unticked before — they arrive unticked again, never hidden. */
+  listSkippedRows: () => SkippedRow[];
+  /** Remember rows left unticked, and forget any taken this time round. */
+  recordSkippedRows: (skipped: readonly SkippedRow[], taken: readonly string[]) => void;
   statementSourceKey: (accountId: Ulid, formatId: string) => Promise<string>;
 
   /** Write the budget to a new .cashmoney path and follow it from now on. */
@@ -180,6 +189,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const fileMtimeRef = useRef<number | undefined>(undefined);
   const formatsRef = useRef<SavedFormat[]>([]);
   const sourcesRef = useRef<ImportSourceEntry[]>([]);
+  // Rows left unticked on an earlier import: they come back unticked and
+  // marked, never hidden — "not this time" is a default, not a deletion.
+  const skippedRef = useRef<SkippedRow[]>([]);
   const backedUpRef = useRef(false);
   // The budget as it stood before the last bulk edit, kept for undo. Session
   // scoped: a bulk edit you can no longer see on screen is the snapshot files'
@@ -214,7 +226,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           backedUpRef.current = true;
           await backupBudgetFile(path).catch(() => undefined);
         }
-        const data: BudgetFileData = { loaded: snapshot, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+        const data: BudgetFileData = { loaded: snapshot, savedFormats: formatsRef.current, importSources: sourcesRef.current, skippedRows: skippedRef.current };
         const text = serializeBudgetFile(data, new Date().toISOString());
         fileMtimeRef.current = await writeBudgetFile(path, text, fileMtimeRef.current);
         baseRef.current = data;
@@ -238,11 +250,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const data = parseBudgetFile(contents); // throws on anything invalid
     // One-time cosmetic migration: imported transfer legs get the canonical
     // "Transfer to/from" payees. Idempotent — 0 changes on every later load.
-    const { budget: loaded, changed } = ops.normalizeTransferPayees(data.loaded);
+    const normalized = ops.normalizeTransferPayees(data.loaded);
+    // …and every payee spelling the transactions use gets a master-list entry,
+    // so the aliases that map a bank's naming onto yours have something to hang
+    // off. Also idempotent: 0 additions on every later load.
+    const synced = ops.syncPayees(normalized.budget);
+    const loaded = synced.budget;
+    const changed = normalized.changed + synced.added;
     filePathRef.current = path;
     fileMtimeRef.current = mtimeMs;
     formatsRef.current = data.savedFormats;
     sourcesRef.current = data.importSources;
+    skippedRef.current = data.skippedRows;
     baseRef.current = { ...data, loaded };
     pendingRef.current = null;
     backedUpRef.current = false;
@@ -269,7 +288,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const { contents, mtimeMs } = await readBudgetFile(path);
       const theirs = parseBudgetFile(contents);
-      const ours: BudgetFileData = { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+      const ours: BudgetFileData = { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current, skippedRows: skippedRef.current };
       const base = baseRef.current ?? theirs; // no base (shouldn't happen): treat the file as base
       const { merged, report } = mergeBudgetFiles(base, ours, theirs);
 
@@ -284,6 +303,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       formatsRef.current = merged.savedFormats;
       sourcesRef.current = merged.importSources;
+      skippedRef.current = merged.skippedRows;
       pendingRef.current = null;
       skipPersistRef.current = true; // we persist the merge explicitly below
       dispatch({ type: "set", budget: merged.loaded });
@@ -325,7 +345,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const { appDataDir, join } = await import("@tauri-apps/api/path");
     const path = await join(await appDataDir(), budgetFileName(loaded.budget.name));
     const text = serializeBudgetFile(
-      { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current },
+      { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current, skippedRows: skippedRef.current },
       new Date().toISOString(),
     );
     const mtime = await writeBudgetFile(path, text);
@@ -334,7 +354,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     filePathRef.current = path;
     fileMtimeRef.current = mtime;
     backedUpRef.current = true; // just written; nothing older to preserve
-    baseRef.current = { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+    baseRef.current = { loaded, savedFormats: formatsRef.current, importSources: sourcesRef.current, skippedRows: skippedRef.current };
     skipPersistRef.current = true;
     setFilePath(path);
     setNeedsSetup(false);
@@ -368,7 +388,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       if (!isTauri()) {
-        if (!cancelled) dispatch({ type: "set", budget: ops.normalizeTransferPayees(demoBudget()).budget });
+        if (!cancelled) dispatch({ type: "set", budget: ops.syncPayees(ops.normalizeTransferPayees(demoBudget()).budget).budget });
         return;
       }
       const repo = new BudgetRepository(new TauriFileSystem());
@@ -383,9 +403,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // First run on the single-file format: migrate legacy data if present;
         // on a truly fresh machine, ask create-or-open instead of assuming.
         if (app.activeBudgetId) {
-          const loaded = ops.normalizeTransferPayees(await repo.loadBudget(app.activeBudgetId)).budget;
+          const loaded = ops.syncPayees(ops.normalizeTransferPayees(await repo.loadBudget(app.activeBudgetId)).budget).budget;
           formatsRef.current = await repo.loadFormats().catch(() => []);
           sourcesRef.current = await repo.loadImportSources(app.activeBudgetId).catch(() => []);
+          skippedRef.current = [];
           if (!cancelled) await followNewFileRef.current(loaded);
         } else if (!cancelled) {
           setNeedsSetup(true);
@@ -567,6 +588,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       approveTransactions: (ids) => apply((b) => ops.approveTransactions(b, ids)),
       setClearedStatus: (ids, cleared) => apply((b) => ops.setClearedStatus(b, ids, cleared)),
       renamePayee: (from, to) => apply((b) => ops.renamePayee(b, from, to)),
+      rememberPayeeAlias: (name, alias) => apply((b) => ops.rememberPayeeAlias(b, name, alias)),
+      removePayeeAlias: (payeeId, alias) => apply((b) => ops.removePayeeAlias(b, payeeId, alias)),
+      deletePayee: (payeeId) => apply((b) => ops.deletePayee(b, payeeId)),
       linkTransfers: (pairs) => {
         const before = budgetRef.current;
         const drift = applyBulk("link-transfers", (b) => ops.linkTransfers(b, pairs).budget, { preservesNumbers: true });
@@ -594,6 +618,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       },
       listStatementSources: () =>
         Promise.resolve([...sourcesRef.current].sort((a, b) => (b.lastUsed ?? "").localeCompare(a.lastUsed ?? ""))),
+      listSkippedRows: () => [...skippedRef.current],
+      recordSkippedRows: (skipped, taken) => {
+        const drop = new Set(taken);
+        const known = new Set(skippedRef.current.map((r) => r.identity));
+        skippedRef.current = [
+          ...skippedRef.current.filter((r) => !drop.has(r.identity)),
+          ...skipped.filter((r) => !known.has(r.identity) && !drop.has(r.identity)),
+        ];
+        scheduleSave();
+      },
       statementSourceKey: async (accountId, formatId) => {
         if (!isTauri()) return `stmt:${accountId}`; // browser preview: nothing persists
         const lastUsed = new Date().toISOString().slice(0, 10);
@@ -613,7 +647,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const b = budgetRef.current;
         const repo = repoRef.current;
         if (!b || !repo) throw new Error("No budget loaded");
-        const data: BudgetFileData = { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current };
+        const data: BudgetFileData = { loaded: b, savedFormats: formatsRef.current, importSources: sourcesRef.current, skippedRows: skippedRef.current };
         const text = serializeBudgetFile(data, new Date().toISOString());
         const mtime = await writeBudgetFile(newPath, text); // save dialog already confirmed any overwrite
         const app = await repo.loadApp();

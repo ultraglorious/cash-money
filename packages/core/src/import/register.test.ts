@@ -53,7 +53,7 @@ describe("parseDateAs", () => {
   });
 
   it("finds a date embedded in free text (a description mapped as the date column)", () => {
-    expect(parseDateAs("(..4460) 2026-01-03 00:00 Amazon.de*XYZ\\5 rue\\LUXEMBOURG", "iso")).toBe("2026-01-03");
+    expect(parseDateAs("(..1234) 2026-01-03 00:00 Amazon.de*XYZ\\5 rue\\LUXEMBOURG", "iso")).toBe("2026-01-03");
     expect(parseDateAs("paid on 03.01.2026 at the till", "dmy")).toBe("2026-01-03");
     // Digit-boundary guards: long digit runs are not dates.
     expect(() => parseDateAs("ref 12345-67-89012", "iso")).toThrow(/Bad ISO date/);

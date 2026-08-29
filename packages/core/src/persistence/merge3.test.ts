@@ -25,6 +25,7 @@ function file(transactions: Transaction[], over: Partial<BudgetFileData> = {}): 
     },
     savedFormats: over.savedFormats ?? [],
     importSources: over.importSources ?? [],
+    skippedRows: over.skippedRows ?? [],
   };
 }
 
@@ -116,5 +117,47 @@ describe("mergeBudgetFiles (three-way)", () => {
     theirs.loaded.budget = { ...theirs.loaded.budget, name: "Theirs" };
     const tied = mergeBudgetFiles(base, ours, theirs);
     expect(tied.merged.loaded.budget.name).toBe("Ours");
+  });
+
+  it("unions payee aliases learned on both machines", () => {
+    const withPayees = (aliases: string[], name = "Northwind") => {
+      const d = file([tx("T1")]);
+      return { ...d, loaded: { ...d.loaded, payees: [{ id: f.tid("PNorthwind"), name, aliases }] } };
+    };
+    const base = withPayees(["as northwind bank"]);
+    const ours = withPayees(["as northwind bank", "northwind insurance"]);
+    const theirs = withPayees(["as northwind bank", "northwind bank tallinn"]);
+
+    const { merged } = mergeBudgetFiles(base, ours, theirs);
+    expect([...merged.loaded.payees![0]!.aliases].sort()).toEqual([
+      "as northwind bank",
+      "northwind bank tallinn",
+      "northwind insurance",
+    ]);
+
+    // A rename still resolves this-computer-wins, and the aliases survive it.
+    const renamedHere = withPayees(["as northwind bank"], "Northwind Bank");
+    const renamedThere = withPayees(["as northwind bank", "learned there"], "Northwind Bank");
+    const both = mergeBudgetFiles(base, renamedHere, renamedThere).merged;
+    expect(both.loaded.payees![0]!.name).toBe("Northwind Bank");
+    expect([...both.loaded.payees![0]!.aliases].sort()).toEqual(["as northwind bank", "learned there"]);
+  });
+
+  it("keeps skips from both machines, and lets either machine take a row back", () => {
+    const skip = (identity: string) => ({ identity: f.tid(identity) as unknown as string, sourceKey: "s", since: "2026-08-01" });
+    const withSkips = (rows: ReturnType<typeof skip>[]) => ({ ...file([tx("T1")]), skippedRows: rows as never });
+
+    const base = withSkips([skip("SK1")]);
+    const ours = withSkips([skip("SK1"), skip("SK2")]);
+    const theirs = withSkips([skip("SK1"), skip("SK3")]);
+    const { merged } = mergeBudgetFiles(base, ours, theirs);
+    expect(merged.skippedRows.map((r) => r.identity).sort()).toEqual(
+      [f.tid("SK1"), f.tid("SK2"), f.tid("SK3")].sort(),
+    );
+
+    // Taking a row back on one machine removes it: a skip is a default, not a
+    // deletion, so unskipping has to survive the merge too.
+    const tookItBack = mergeBudgetFiles(ours, withSkips([skip("SK2")]), ours).merged;
+    expect(tookItBack.skippedRows.map((r) => r.identity)).toEqual([f.tid("SK2")]);
   });
 });

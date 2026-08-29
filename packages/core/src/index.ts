@@ -23,6 +23,14 @@ export { applyPreservingNumbers, projectionDrift, type Drift } from "./invariant
 export * from "./import/format.js";
 export { builtinFormat, builtinFormats } from "./import/formats/index.js";
 export { guessFormat, type FormatGuess } from "./import/guess.js";
+export {
+  lastCategoryByPayee,
+  matchExistingPayee,
+  nameIncomingRow,
+  payeeFromDescription,
+  technicalKey,
+  type ProposedName,
+} from "./import/payee.js";
 export { formatFitsHeaders, parseCsv, parseDateAs, mapRegisterRows, type ParsedCsv, type NormTxn, type MapRegisterOptions, type MapRegisterResult } from "./import/register.js";
 export * from "./import/config.js";
 export { stageImport, type SourceInput, type ImportReport, type StagingResult } from "./import/pipeline.js";

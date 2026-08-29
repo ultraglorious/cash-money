@@ -44,7 +44,7 @@ describe("reconcileStatement passes", () => {
   it("exact: matches on amount + true date ±1d despite renamed payees and late booking", () => {
     // Budget has the TRUE date (Jan 3) and a renamed payee; the statement books Jan 5.
     const b = budget([tx("T1", "2026-01-03", -1234, "Nice Cafe")]);
-    const csv = csvOf([["2026-01-05", "CAFE*88123 TLL", "-12.34", "(..4460) 2026-01-03 09:15 CAFE*88123"]]);
+    const csv = csvOf([["2026-01-05", "CAFE*88123 TLL", "-12.34", "(..1234) 2026-01-03 09:15 CAFE*88123"]]);
     const r = reconcileStatement(b, csv, FORMAT, OPTS);
     expect(r.matches).toHaveLength(1);
     expect(r.matches[0]).toMatchObject({ kind: "exact", txId: f.tid("T1"), deltaDays: 0 });
@@ -55,8 +55,8 @@ describe("reconcileStatement passes", () => {
   it("exact: flags interchangeable ties (two identical rides, either pairing is fine)", () => {
     const b = budget([tx("T1", "2026-07-15", -990, "Taxi"), tx("T2", "2026-07-15", -990, "Taxi")]);
     const csv = csvOf([
-      ["2026-07-15", "BOLT.EU/1", "-9.90"],
-      ["2026-07-15", "BOLT.EU/2", "-9.90"],
+      ["2026-07-15", "RIDECO.EU/1", "-9.90"],
+      ["2026-07-15", "RIDECO.EU/2", "-9.90"],
     ]);
     const r = reconcileStatement(b, csv, FORMAT, OPTS);
     expect(r.matches).toHaveLength(2);
@@ -100,8 +100,8 @@ describe("reconcileStatement passes", () => {
   it("churn: a charge and its same-payee refund cancel out", () => {
     const b = budget([]);
     const csv = csvOf([
-      ["2026-05-12", "APPLE.COM/BILL", "-69.99"],
-      ["2026-05-13", "APPLE.COM/BILL", "69.99"],
+      ["2026-05-12", "FRUITCO.COM/BILL", "-69.99"],
+      ["2026-05-13", "FRUITCO.COM/BILL", "69.99"],
     ]);
     const r = reconcileStatement(b, csv, FORMAT, OPTS);
     expect(r.churn).toHaveLength(1);

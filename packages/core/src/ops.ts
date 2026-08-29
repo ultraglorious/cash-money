@@ -5,6 +5,7 @@ import { computeProjection } from "./engine/compute.js";
 import type {
   Account,
   AccountType,
+  Payee,
   Category,
   CategoryGroup,
   ClearedStatus,
@@ -575,11 +576,109 @@ export function approveTransactions(b: LoadedBudget, txIds: readonly Ulid[]): Lo
   return { ...b, transactions: successors.length > 0 ? [...transactions, ...successors] : transactions };
 }
 
-/** Rename every occurrence of a payee across the budget (exact match). */
+// ---- Payees ----------------------------------------------------------------
+// Transactions carry payee TEXT; the master list carries identity, so the
+// aliases that map a bank's "AS Northwind Bank" onto your "Northwind" survive you renaming
+// it again tomorrow. Keeping the two in step is this section's whole job.
+
+const payeeKey = (name: string): string => name.normalize("NFC").trim().toLowerCase();
+
+/**
+ * Mint a master-list entry for every payee spelling the transactions use.
+ * Idempotent — running it on every load is the point, so a payee typed straight
+ * into the register turns up in the list without ceremony. Transfer legs are
+ * skipped: their payee is derived text, not a name anyone chose.
+ */
+export function syncPayees(b: LoadedBudget): { budget: LoadedBudget; added: number } {
+  const known = new Set((b.payees ?? []).map((p) => payeeKey(p.name)));
+  const minted: Payee[] = [];
+  for (const t of b.transactions) {
+    if (t.transfer) continue;
+    const name = t.payee.trim();
+    const key = payeeKey(name);
+    if (!name || known.has(key)) continue;
+    known.add(key);
+    minted.push({ id: newId(), name, aliases: [] });
+  }
+  if (minted.length === 0) return { budget: b, added: 0 };
+  return { budget: { ...b, payees: [...(b.payees ?? []), ...minted] }, added: minted.length };
+}
+
+/**
+ * Rename every occurrence of a payee, and the master-list entry with it.
+ *
+ * Renaming onto a name already in use MERGES the two — that is the documented
+ * behaviour of the payees screen — so the surviving entry keeps both sets of
+ * aliases. Anything a bank called either one still lands on the survivor.
+ */
 export function renamePayee(b: LoadedBudget, from: string, to: string): LoadedBudget {
   const next = to.trim();
   if (!next || next === from) return b;
-  return { ...b, transactions: b.transactions.map((t) => (t.payee === from ? { ...t, payee: next } : t)) };
+  const transactions = b.transactions.map((t) => (t.payee === from ? { ...t, payee: next } : t));
+
+  const payees = b.payees ?? [];
+  const source = payees.find((p) => payeeKey(p.name) === payeeKey(from));
+  const target = payees.find((p) => payeeKey(p.name) === payeeKey(next) && p !== source);
+  let nextPayees: Payee[];
+  if (source && target) {
+    const aliases = [...new Set([...target.aliases, ...source.aliases])];
+    nextPayees = payees.filter((p) => p !== source).map((p) => (p === target ? { ...p, aliases } : p));
+  } else if (source) {
+    nextPayees = payees.map((p) => (p === source ? { ...p, name: next } : p));
+  } else if (target) {
+    nextPayees = payees;
+  } else {
+    nextPayees = [...payees, { id: newId(), name: next, aliases: [] }];
+  }
+  return { ...b, transactions, payees: nextPayees };
+}
+
+/**
+ * Record that a technical string means this payee. A key belongs to exactly one
+ * payee, so it is taken off any other entry — otherwise the winner would depend
+ * on list order.
+ */
+export function addPayeeAlias(b: LoadedBudget, payeeId: Ulid, alias: string): LoadedBudget {
+  const key = payeeKey(alias);
+  if (!key) return b;
+  const payees = (b.payees ?? []).map((p) => {
+    if (p.id === payeeId) return p.aliases.includes(key) ? p : { ...p, aliases: [...p.aliases, key] };
+    return p.aliases.includes(key) ? { ...p, aliases: p.aliases.filter((a) => a !== key) } : p;
+  });
+  return { ...b, payees };
+}
+
+export function removePayeeAlias(b: LoadedBudget, payeeId: Ulid, alias: string): LoadedBudget {
+  const key = payeeKey(alias);
+  return {
+    ...b,
+    payees: (b.payees ?? []).map((p) => (p.id === payeeId ? { ...p, aliases: p.aliases.filter((a) => a !== key) } : p)),
+  };
+}
+
+/** Drop a master-list entry. Transactions keep their text; nothing is renamed. */
+export function deletePayee(b: LoadedBudget, payeeId: Ulid): LoadedBudget {
+  return { ...b, payees: (b.payees ?? []).filter((p) => p.id !== payeeId) };
+}
+
+/**
+ * Record "call this technical string that name" in one step — minting the payee
+ * if it is new. This is what the import wizard calls when you correct a row.
+ */
+export function rememberPayeeAlias(b: LoadedBudget, name: string, alias: string): LoadedBudget {
+  const trimmed = name.trim();
+  if (!trimmed || !alias.trim()) return b;
+  const { budget, payee } = ensurePayee(b, trimmed);
+  return addPayeeAlias(budget, payee.id, alias);
+}
+
+/** The master-list entry for a name, minting one if this is its first sighting. */
+export function ensurePayee(b: LoadedBudget, name: string): { budget: LoadedBudget; payee: Payee } {
+  const trimmed = name.trim();
+  const existing = (b.payees ?? []).find((p) => payeeKey(p.name) === payeeKey(trimmed));
+  if (existing) return { budget: b, payee: existing };
+  const payee: Payee = { id: newId(), name: trimmed, aliases: [] };
+  return { budget: { ...b, payees: [...(b.payees ?? []), payee] }, payee };
 }
 
 /** Set the cleared status on many transactions in one pass. */

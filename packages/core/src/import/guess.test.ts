@@ -28,4 +28,5 @@ describe("guessFormat", () => {
     expect(g.dateColumn).toBeUndefined();
     expect(g.amount).toBeUndefined();
   });
+
 });
