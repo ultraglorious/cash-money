@@ -14,7 +14,17 @@
 # commit. `git commit --no-verify` bypasses this when you mean to.
 set -e
 
-BUILTIN='\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\b|\(\.\.[0-9]{4}\)'
+# Account-ish shapes, plus private-key material of the kinds that could
+# plausibly be pasted here: the updater's signing key (minisign/rsign format,
+# whose header says "secret key") and any PEM/SSH private key. The updater's
+# PUBLIC key is meant to be committed, and its header says "public key", so it
+# passes untouched.
+# The updater's key files are the minisign box base64-encoded as ONE line, so
+# the telltale header is invisible to a plain grep. base64 is deterministic,
+# though: every encoded SECRET key begins with the same prefix (the encoding
+# of "untrusted comment: rsign encrypted secret key"), while the PUBLIC key
+# encodes a different comment and stays committable.
+BUILTIN='\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\b|\(\.\.[0-9]{4}\)|untrusted comment:.*(secret|private) key|-----BEGIN [A-Z ]*PRIVATE KEY-----|dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5'
 # Published placeholders of those same shapes: the documentation IBAN and the
 # stand-in card mask. Removed before matching so the invented values the tests
 # are supposed to use don't trip the rule meant to enforce using them.
@@ -29,7 +39,9 @@ fi
 
 subject="$1"   # "staged" or a path to a commit message
 if [ "$subject" = "staged" ]; then
-  content=$(git diff --cached -U0 --no-color | grep '^+' | grep -v '^+++' || true)
+  # The scanner's own source necessarily contains the patterns it hunts for,
+  # so it is excluded — otherwise editing this file trips it every time.
+  content=$(git diff --cached -U0 --no-color -- . ':(exclude).githooks/*' | grep '^+' | grep -v '^+++' || true)
   where="staged changes"
 else
   content=$(cat "$subject")

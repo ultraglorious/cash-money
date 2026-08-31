@@ -1,0 +1,71 @@
+name: Release
+
+# A version tag turns into a DRAFT GitHub release carrying the Windows
+# installers and their update signatures. Draft on purpose: the updater
+# endpoint ignores drafts, so nothing reaches an installed app until the draft
+# is smoke-tested by hand and published.
+#
+# Only the Windows PC takes released builds — the Mac runs from source
+# (`npm run app`). macOS artifacts can be added back here if that changes.
+#
+# Security shape, deliberately:
+#  - only a `v*` tag can start this, and only a collaborator can push one
+#  - the job runs in the `release` environment, so it PAUSES for manual
+#    approval before the signing secrets exist for it at all
+#  - the secrets are scoped to the one step that signs, not the whole job
+#  - every action is pinned to a commit SHA, so a hijacked version tag on an
+#    upstream action cannot put new code next to the key
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows-installer:
+    name: Windows installer
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: write # create the draft release and upload its assets
+    steps:
+      - name: Check out the tagged code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
+
+      - name: Restore the Rust build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The overlay config is what makes this a RELEASE build: it turns on
+      # updater artifacts and carries the updater's public key. Local builds
+      # never use it, so they never need the signing key.
+      #
+      # updaterJsonPreferNsis: latest.json must point at the NSIS setup.exe —
+      # with `targets: "all"` both MSI and NSIS exist, and the action's default
+      # would pick the MSI.
+      - name: Build, sign, and draft the release
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: cash-money ${{ github.ref_name }}
+          releaseDraft: true
+          updaterJsonPreferNsis: true
+          args: --config src-tauri/tauri.release.conf.json

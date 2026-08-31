@@ -99,7 +99,49 @@ npm run dev --workspace @cash-money/desktop
 Only one dev server can run at a time (the port is fixed for Tauri). If you see
 "Port 5173 is already in use", stop the old one: `lsof -ti:5173 | xargs kill`.
 
+### Using it, rather than developing it
+
+`tauri dev` rebuilds and starts a dev server on every launch, which is a lot of
+waiting if you only want to *use* the app. Build it once instead and launch it
+like anything else:
+
+```bash
+npm run app        # macOS: ~20s incrementally, then it's in /Applications
+```
+
+That quits the app if it's running (politely, so it finishes saving), builds a
+debug bundle — fast to compile, indistinguishable in use for an app this size —
+copies it to `/Applications`, and reopens it. Run it again whenever you want the
+newest code. A locally built app carries no download quarantine, so macOS opens
+it without complaint.
+
+Don't run the installed app and `tauri dev` against the same budget file at the
+same time — both will write to it. The sync merge would sort it out, but there's
+no reason to make it work.
+
 ---
+
+## Releasing (Windows auto-update)
+
+The Windows PC runs released builds and updates itself; the Mac runs from
+source (`npm run app`). Cutting a release:
+
+```bash
+npm run release 1.0.2   # sets the version everywhere it must agree
+```
+
+The **major version equals the budget file version** (enforced by the script):
+a major bump means the file format changed, so update every machine before
+saving from the new one — an older app refuses a newer file by design. Minor is
+features, patch is fixes.
+
+then commit, push `main`, and push the `v1.0.2` tag. CI pauses for approval in
+the Actions tab (the `release` environment holds the signing key), builds and
+signs the Windows installers, and uploads them to a **draft** release with the
+`latest.json` the updater reads. Install the draft's `setup.exe` on the PC to
+smoke-test it, then publish the draft — publishing is the moment installed apps
+can see it. Release builds use `src-tauri/tauri.release.conf.json` on top of
+the base config; local builds never touch it, so they never need the key.
 
 ## Key concepts
 
