@@ -121,6 +121,23 @@ no reason to make it work.
 
 ---
 
+## Releasing (Windows auto-update)
+
+The Windows PC runs released builds and updates itself; the Mac runs from
+source (`npm run app`). Cutting a release:
+
+```bash
+npm run release 0.1.2   # sets the version everywhere it must agree
+```
+
+then commit, push `main`, and push the `v0.1.2` tag. CI pauses for approval in
+the Actions tab (the `release` environment holds the signing key), builds and
+signs the Windows installers, and uploads them to a **draft** release with the
+`latest.json` the updater reads. Install the draft's `setup.exe` on the PC to
+smoke-test it, then publish the draft — publishing is the moment installed apps
+can see it. Release builds use `src-tauri/tauri.release.conf.json` on top of
+the base config; local builds never touch it, so they never need the key.
+
 ## Key concepts
 
 - **Envelope budgeting.** Every unit of income is assigned ("budgeted") into a
