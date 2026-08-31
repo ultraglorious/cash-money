@@ -19,7 +19,12 @@ set -e
 # whose header says "secret key") and any PEM/SSH private key. The updater's
 # PUBLIC key is meant to be committed, and its header says "public key", so it
 # passes untouched.
-BUILTIN='\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\b|\(\.\.[0-9]{4}\)|untrusted comment:.*(secret|private) key|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+# The updater's key files are the minisign box base64-encoded as ONE line, so
+# the telltale header is invisible to a plain grep. base64 is deterministic,
+# though: every encoded SECRET key begins with the same prefix (the encoding
+# of "untrusted comment: rsign encrypted secret key"), while the PUBLIC key
+# encodes a different comment and stays committable.
+BUILTIN='\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\b|\(\.\.[0-9]{4}\)|untrusted comment:.*(secret|private) key|-----BEGIN [A-Z ]*PRIVATE KEY-----|dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5'
 # Published placeholders of those same shapes: the documentation IBAN and the
 # stand-in card mask. Removed before matching so the invented values the tests
 # are supposed to use don't trip the rule meant to enforce using them.
