@@ -5,7 +5,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "REPLACE_WITH_UPDATER_PUBLIC_KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUyNjU3Q0YwODVBNEI1M0EKUldRNnRhU0Y4SHhsNHZNNEd0VlEvUGorWUFMa2x3di9QWS9ZamVRNWFEZDZXRjJDZFVFMmhvTTMK",
       "endpoints": [
         "https://github.com/ultraglorious/cash-money/releases/latest/download/latest.json"
       ],
