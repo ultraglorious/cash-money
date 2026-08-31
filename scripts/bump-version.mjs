@@ -7,6 +7,14 @@
 // drifting apart either breaks the build or lies to the updater. This is the
 // only supported way to change them. The npm package versions stay 0.0.0 —
 // workspace-internal, never shipped.
+//
+// What the digits mean here (a personal app has no dependents, so semver's
+// compatibility contract is repurposed for the one boundary that exists):
+//
+//   major  = BUDGET_FILE_VERSION. A major bump means the file format changed:
+//            update every machine before saving from the new one, because an
+//            older app refuses a newer file by design. Enforced below.
+//   minor  = features.  patch = fixes.
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -30,6 +38,24 @@ const dirty = execSync("git status --porcelain", { cwd: root })
   .filter((l) => l && !l.startsWith("??"));
 if (dirty.length > 0) {
   console.error("refusing: the working tree has uncommitted changes:\n" + dirty.join("\n"));
+  process.exit(1);
+}
+
+// major must equal the budget file version — that link is the entire point of
+// the scheme, so it is checked rather than remembered.
+const budgetFileSrc = readFileSync(join(root, "packages/core/src/persistence/budgetFile.ts"), "utf8");
+const fileVersion = Number(/BUDGET_FILE_VERSION = (\d+)/.exec(budgetFileSrc)?.[1]);
+const major = Number(version.split(".")[0]);
+if (!Number.isInteger(fileVersion)) {
+  console.error("refusing: couldn't read BUDGET_FILE_VERSION from packages/core");
+  process.exit(1);
+}
+if (major !== fileVersion) {
+  console.error(
+    `refusing: the app's major version must equal the budget file version.\n` +
+      `BUDGET_FILE_VERSION is ${fileVersion}, so this release must be ${fileVersion}.x.y (got ${version}).\n` +
+      `If the file format really changed, bump BUDGET_FILE_VERSION in the same release.`,
+  );
   process.exit(1);
 }
 

@@ -127,10 +127,15 @@ The Windows PC runs released builds and updates itself; the Mac runs from
 source (`npm run app`). Cutting a release:
 
 ```bash
-npm run release 0.1.2   # sets the version everywhere it must agree
+npm run release 1.0.2   # sets the version everywhere it must agree
 ```
 
-then commit, push `main`, and push the `v0.1.2` tag. CI pauses for approval in
+The **major version equals the budget file version** (enforced by the script):
+a major bump means the file format changed, so update every machine before
+saving from the new one — an older app refuses a newer file by design. Minor is
+features, patch is fixes.
+
+then commit, push `main`, and push the `v1.0.2` tag. CI pauses for approval in
 the Actions tab (the `release` environment holds the signing key), builds and
 signs the Windows installers, and uploads them to a **draft** release with the
 `latest.json` the updater reads. Install the draft's `setup.exe` on the PC to
