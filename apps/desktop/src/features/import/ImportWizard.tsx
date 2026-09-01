@@ -53,7 +53,7 @@ import {
 } from "@cash-money/core";
 import { useApp } from "../../state";
 import { LinkTransfersModal } from "../transactions/LinkTransfersModal";
-import { categoryOptions } from "../../categoryOptions";
+import { categoryOptions, incomeCategoryOptions } from "../../categoryOptions";
 import { money } from "../../format";
 import { isTauri, readTextAbs, readZipCsvs } from "../../platform/tauriFs";
 import {
@@ -662,8 +662,18 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   const canPreview = Boolean(parsed && accountId && mappingComplete(mapping));
   // Only the envelopes of the household whose account this is: filing a row
   // against another household's envelope moves money that never moved.
+  //
+  // Plus the household's income categories under "Unbudgeted money" — a salary
+  // or an arriving transfer files to Ready to Assign, not to an envelope, and
+  // without this group the wizard offered no valid choice for incoming money
+  // (and couldn't even display the category the naming pass proposes for it).
+  // Same composition as the register's editor row.
   const importAccount = app.budget.accounts.find((a) => a.id === accountId);
-  const categoryData = categoryOptions(app.budget, importAccount ? { household: importAccount.household } : undefined);
+  const envelopeData = categoryOptions(app.budget, importAccount ? { household: importAccount.household } : undefined);
+  const unbudgeted = incomeCategoryOptions(app.budget)
+    .filter((c) => c.household === importAccount?.household)
+    .map(({ value, label }) => ({ value, label }));
+  const categoryData = unbudgeted.length ? [{ group: "Unbudgeted money", items: unbudgeted }, ...envelopeData] : envelopeData;
   const unclaimedTxs = result
     ? result.unclaimedBudget.map((id) => app.budget.transactions.find((t) => t.id === id)).filter((t): t is Transaction => !!t)
     : [];
