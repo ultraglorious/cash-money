@@ -159,8 +159,12 @@ export function EditorRow({
     // An existing transfer stays a transfer even while the text is mid-edit.
     if (!initial?.transfer) setTransferTo(null);
     if (!categoryTouched && !splits) {
+      // Only auto-fill a category this account's picker actually offers — the
+      // payee's last filing may belong to the other household's envelope set.
       const last = lastCategoryOf(value);
-      if (last) setCategoryId(last);
+      if (last && categoryDataFor(accountId as Ulid | null).some((g) => g.items.some((i) => i.value === last))) {
+        setCategoryId(last);
+      }
     }
   };
 

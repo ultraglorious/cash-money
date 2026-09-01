@@ -472,7 +472,10 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       // what this counterparty or this description was called last time, or the
       // description itself cleaned up — and the category that name usually gets.
       // These are seeds in an editable field, not decisions.
-      const categories = lastCategoryByPayee(app.budget);
+      // Scoped to this account's household: a payee used by both households
+      // (every grocery store) must propose THIS pool's envelope, not the other's.
+      const importHousehold = app.budget.accounts.find((x) => x.id === accId)?.household;
+      const categories = lastCategoryByPayee(app.budget, { household: importHousehold });
       const payees = app.budget.payees ?? [];
       const seeded = new Map<number, RowEdit>();
       const named = new Map<number, ProposedName>();

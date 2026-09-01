@@ -87,12 +87,34 @@ function tokens(s: string): Set<string> {
 }
 
 /**
+ * Estonian inflects the nouns on a receipt: the bank writes VERLANI (genitive)
+ * or KESAST (elative) where the payee is Verlan or Kesa. Case endings are
+ * short suffixes appended to the stem, so a payee token also matches a
+ * statement token that merely EXTENDS it by up to two characters — provided the
+ * stem itself is substantial (four letters), so a short payee can't colonise
+ * every word it happens to start.
+ */
+const MIN_STEM = 4;
+const MAX_CASE_SUFFIX = 2;
+
+function tokenMatches(payeeToken: string, statementTokens: ReadonlySet<string>): boolean {
+  if (statementTokens.has(payeeToken)) return true;
+  if (payeeToken.length < MIN_STEM) return false;
+  for (const st of statementTokens) {
+    if (st.length > payeeToken.length && st.length - payeeToken.length <= MAX_CASE_SUFFIX && st.startsWith(payeeToken)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * The payee whose every word appears in the bank's string — the most specific
  * one, so "Northwind Insurance" beats "Northwind" when both fit.
  *
- * Deliberately conservative: never a partial word, never a token under three
- * characters. A first-time merchant comes back undefined rather than wearing
- * someone else's name.
+ * Deliberately conservative: never more than a case ending beyond a whole
+ * word, never a token under three characters. A first-time merchant comes back
+ * undefined rather than wearing someone else's name.
  */
 export function matchExistingPayee(technical: string, payees: readonly Payee[]): Payee | undefined {
   const words = tokens(technical);
@@ -104,7 +126,7 @@ export function matchExistingPayee(technical: string, payees: readonly Payee[]):
     if (pw.size === 0) continue;
     let all = true;
     for (const w of pw) {
-      if (!words.has(w)) {
+      if (!tokenMatches(w, words)) {
         all = false;
         break;
       }
@@ -122,12 +144,31 @@ export function matchExistingPayee(technical: string, payees: readonly Payee[]):
   return best;
 }
 
-/** The category a payee was last filed under — derived, so it can't go stale. */
-export function lastCategoryByPayee(b: LoadedBudget): Map<string, Ulid> {
+/**
+ * The category a payee was last filed under — derived, so it can't go stale.
+ *
+ * Household-scoped when asked: a payee used by both households (every grocery
+ * store) keeps a separate answer per household, because proposing the Joint
+ * envelope for a Personal import would file one household's spending against
+ * the other's money — and the scoped picker couldn't even display it.
+ */
+export function lastCategoryByPayee(b: LoadedBudget, opts: { household?: string } = {}): Map<string, Ulid> {
+  const allowed =
+    opts.household === undefined
+      ? null
+      : new Set(
+          b.categories
+            .filter((c) => {
+              const g = b.groups.find((g) => g.id === c.groupId);
+              return g?.household === opts.household;
+            })
+            .map((c) => c.id),
+        );
   const out = new Map<string, Ulid>();
   const newestFirst = [...b.transactions].sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0));
   for (const t of newestFirst) {
     if (t.transfer || !t.categoryId) continue;
+    if (allowed && !allowed.has(t.categoryId)) continue;
     const key = fold(t.payee);
     if (key && !out.has(key)) out.set(key, t.categoryId);
   }

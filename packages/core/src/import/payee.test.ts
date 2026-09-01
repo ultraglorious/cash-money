@@ -95,6 +95,20 @@ describe("matchExistingPayee", () => {
     expect(matchExistingPayee(technical, [a, b])?.name).toBe("Account interest");
   });
 
+  it("sees through Estonian case endings, which is how receipts actually arrive", () => {
+    const list = [payee("Verlan"), payee("Kesa")];
+    expect(matchExistingPayee("VESKI VERLANI ISETEENI", list)?.name).toBe("Verlan"); // genitive
+    expect(matchExistingPayee("OSTUKOHT KESAST", list)?.name).toBe("Kesa"); // elative
+    expect(matchExistingPayee("VESKI VERLAN", list)?.name).toBe("Verlan"); // and the plain form still works
+  });
+
+  it("a case ending is at most two letters, and only on a real stem", () => {
+    // Extending by three letters is a different word, not a declension.
+    expect(matchExistingPayee("VERLANISE FOODS", [payee("Verlan")])).toBeUndefined();
+    // A short payee never colonises words that merely start with it.
+    expect(matchExistingPayee("ERICSSON INVOICE", [payee("Eric")])).toBeUndefined();
+  });
+
   it("never matches on a scrap of a word, or on a token too short to mean anything", () => {
     expect(matchExistingPayee("RIDECOZZA LABS", list)).toBeUndefined();
     expect(matchExistingPayee("anything at all", [payee("AS")])).toBeUndefined();
@@ -178,6 +192,22 @@ describe("lastCategoryByPayee", () => {
 
   it("takes the newest filing, since that is the current intent", () => {
     expect(lastCategoryByPayee(budget()).get("greengrocer")).toBe(DIN);
+  });
+
+  it("keeps households apart when asked, so imports never propose the other pool's envelope", () => {
+    const b = budget();
+    const GJNT = f.tid("GJNT");
+    const JGRO = f.tid("CJGR");
+    b.groups = [f.group({ id: GEVD, name: "Everyday", kind: "normal", household: "Personal" }), f.group({ id: GJNT, name: "Everyday", kind: "normal", household: "Joint" })];
+    b.categories = [...b.categories, f.category({ id: JGRO, groupId: GJNT, name: "Groceries" })];
+    b.transactions = [
+      ...b.transactions,
+      // The NEWEST filing overall is under the Joint household.
+      f.txn({ id: f.tid("TJ"), accountId: CHK, date: "2026-08-01", amount: -3000 as Cents, categoryId: JGRO, payee: "Greengrocer" }),
+    ];
+    expect(lastCategoryByPayee(b).get("greengrocer")).toBe(JGRO); // unscoped: newest wins
+    expect(lastCategoryByPayee(b, { household: "Personal" }).get("greengrocer")).toBe(DIN); // scoped: newest WITHIN the household
+    expect(lastCategoryByPayee(b, { household: "Joint" }).get("greengrocer")).toBe(JGRO);
   });
 
   it("ignores transfer legs, whose payee is derived text", () => {
