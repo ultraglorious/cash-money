@@ -13,14 +13,16 @@ import { fold, trimN } from "./text.js";
  *
  * Three answers, in order of how much they can be trusted:
  *
- *   1. an ALIAS you recorded — exact, deterministic, and yours;
+ *   1. an ALIAS on record — exact, deterministic, and confirmed by you;
  *   2. a MATCH against your existing payees — strip the legal form, and if every
  *      word of one of your payees appears in the bank's string, that is almost
  *      certainly who it is ("AS Northwind Bank" → "Northwind");
  *   3. the DESCRIPTION, cleaned of account numbers, card masks and dates, which
  *      is all there is for a row the bank never named.
  *
- * Only (1) is stored, and only because you confirmed it. (2) and (3) propose.
+ * The matcher is a bootstrap, not the steady state: a correction, an accepted
+ * match, or a later payee rename all record an alias, so each merchant needs
+ * the heuristic at most once and graduates to exact lookup.
  */
 
 /** IBAN-shaped tokens, card masks, dates, times, and long digit runs. */
@@ -65,11 +67,14 @@ export function payeeFromDescription(description: string): string {
 
 /**
  * The key a row is remembered under: what the bank called it, else the shape of
- * its description. One function, so an alias recorded from a row still matches
- * the same row next month.
+ * its description — both run through the same noise-stripping, because a
+ * supplied name can carry a per-transaction id too ("RIDECO.EU/O/2607150000").
+ * Folding the raw name would store an alias that can never fire again; the
+ * stripped stem ("rideco.eu/o") recurs on every future ride. One function, so
+ * an alias recorded from a row still matches the same row next month.
  */
 export function technicalKey(row: { payee: string; memo: string }): string {
-  return fold(row.payee) || fold(payeeFromDescription(row.memo));
+  return fold(payeeFromDescription(row.payee)) || fold(payeeFromDescription(row.memo));
 }
 
 /** Legal forms and company suffixes, never part of what you call something. */

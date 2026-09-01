@@ -218,12 +218,18 @@ An incoming row is named by the first of three answers that applies
 The category comes from whatever that payee was last filed under, derived rather
 than stored so it cannot go stale.
 
-Only aliases are persisted, and only from **corrections**: accepting a suggested
-match teaches nothing, and strings carrying a per-transaction id would fill the
-list with keys that never recur. Aliases are visible and removable in the Payees
-screen, so a bad one is a click to undo rather than something buried in history.
-The three-way merge unions alias lists rather than picking a winner — an alias
-learned on the laptop and another learned on the desktop are both true.
+Only aliases are persisted, and they are learned wherever a decision is made:
+a **correction** in the wizard, an **accepted match** (which graduates that
+merchant from the heuristic to exact lookup, surviving later renames), and a
+**payee rename or merge** — the old spelling demonstrably meant that payee, so
+committing an import quickly and tidying names afterwards teaches just as well
+as correcting in the wizard. Every alias is stored as its noise-stripped stem
+(`addPayeeAlias` normalises at the single point of entry), so a string carrying
+a per-transaction id can never enter the list as a key that won't recur.
+Aliases are visible and removable in the Payees screen, so a bad one is a click
+to undo rather than something buried in history. The three-way merge unions
+alias lists rather than picking a winner — an alias learned on the laptop and
+another learned on the desktop are both true.
 
 ## The import pipeline (`packages/core/src/import/`)
 

@@ -1,4 +1,5 @@
 import { newId, type Ulid } from "./ids.js";
+import { technicalKey } from "./import/payee.js";
 import type { Cents } from "./money.js";
 import { nextOccurrence, type ISODate, type MonthKey } from "./time.js";
 import { computeProjection } from "./engine/compute.js";
@@ -610,6 +611,12 @@ export function syncPayees(b: LoadedBudget): { budget: LoadedBudget; added: numb
  * Renaming onto a name already in use MERGES the two — that is the documented
  * behaviour of the payees screen — so the surviving entry keeps both sets of
  * aliases. Anything a bank called either one still lands on the survivor.
+ *
+ * The rename itself is also worth learning: the OLD spelling demonstrably meant
+ * this payee, so its (noise-stripped) key becomes an alias on the survivor.
+ * That is what makes "commit the import quickly, tidy the names afterwards" a
+ * workflow that teaches — the next statement's identical string lands renamed
+ * without the wizard ever asking again.
  */
 export function renamePayee(b: LoadedBudget, from: string, to: string): LoadedBudget {
   const next = to.trim();
@@ -620,26 +627,42 @@ export function renamePayee(b: LoadedBudget, from: string, to: string): LoadedBu
   const source = payees.find((p) => payeeKey(p.name) === payeeKey(from));
   const target = payees.find((p) => payeeKey(p.name) === payeeKey(next) && p !== source);
   let nextPayees: Payee[];
+  let survivorId: Ulid | undefined;
   if (source && target) {
     const aliases = [...new Set([...target.aliases, ...source.aliases])];
     nextPayees = payees.filter((p) => p !== source).map((p) => (p === target ? { ...p, aliases } : p));
+    survivorId = target.id;
   } else if (source) {
     nextPayees = payees.map((p) => (p === source ? { ...p, name: next } : p));
+    survivorId = source.id;
   } else if (target) {
     nextPayees = payees;
+    survivorId = target.id;
   } else {
-    nextPayees = [...payees, { id: newId(), name: next, aliases: [] }];
+    const minted: Payee = { id: newId(), name: next, aliases: [] };
+    nextPayees = [...payees, minted];
+    survivorId = minted.id;
   }
-  return { ...b, transactions, payees: nextPayees };
+
+  const renamed: LoadedBudget = { ...b, transactions, payees: nextPayees };
+  const oldKey = technicalKey({ payee: from, memo: "" });
+  // A case-only or whitespace rename teaches nothing; anything else does.
+  if (oldKey && oldKey !== payeeKey(next)) return addPayeeAlias(renamed, survivorId, from);
+  return renamed;
 }
 
 /**
  * Record that a technical string means this payee. A key belongs to exactly one
  * payee, so it is taken off any other entry — otherwise the winner would depend
  * on list order.
+ *
+ * The alias is normalized here, at the single point of entry: whatever arrives
+ * (a raw bank string with a per-transaction id, a manual paste in the payees
+ * screen) is reduced to its stable stem, so every stored alias is one that can
+ * actually recur.
  */
 export function addPayeeAlias(b: LoadedBudget, payeeId: Ulid, alias: string): LoadedBudget {
-  const key = payeeKey(alias);
+  const key = technicalKey({ payee: alias, memo: "" });
   if (!key) return b;
   const payees = (b.payees ?? []).map((p) => {
     if (p.id === payeeId) return p.aliases.includes(key) ? p : { ...p, aliases: [...p.aliases, key] };

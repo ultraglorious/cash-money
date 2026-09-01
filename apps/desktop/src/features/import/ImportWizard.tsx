@@ -618,17 +618,24 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       });
       app.addTransactions(added);
 
-      // Learn only from CORRECTIONS. Accepting a suggested match teaches
-      // nothing — and the strings that carry a per-transaction id ("RIDECO.EU/O/
-      // 2607150000") would fill the list with keys that never recur.
+      // Learn from corrections AND from accepted heuristic matches. A correction
+      // is the user's word; an accepted match graduates that merchant from the
+      // heuristic to an exact alias, which also survives the payee being renamed
+      // later (the matcher would re-derive from the new name and could lose it).
+      // Rows kept under the bank's own name or the derived description teach
+      // nothing worth storing — next time the same string arrives, the same
+      // fallback produces the same result. Keys are noise-stripped stems, so a
+      // per-transaction id never enters the alias list.
+      const toLearn = new Map<string, string>();
       for (const row of rows) {
         const proposal = proposed.get(row.sourceRow);
         const chosen = (edits.get(row.sourceRow)?.payee ?? proposal?.payee ?? row.payee).trim();
         const key = technicalKey({ payee: row.payee, memo: row.memo });
         if (!chosen || !key) continue;
-        if (proposal && chosen === proposal.payee) continue; // accepted, not corrected
-        app.rememberPayeeAlias(chosen, key);
+        const corrected = !proposal || chosen !== proposal.payee;
+        if (corrected || proposal.from === "match") toLearn.set(key, chosen);
       }
+      for (const [key, chosen] of toLearn) app.rememberPayeeAlias(chosen, key);
     }
     if (result.parsedRows > 0) {
       // Matched card rows are verified, not paid — only the through-date
@@ -748,6 +755,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
           selected={selected}
           setSelected={setSelected}
           edits={edits}
+          proposed={proposed}
           previouslySkipped={previouslySkipped}
           setEdits={setEdits}
           isCard={isCard}
@@ -762,7 +770,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ReconcileView({ result, currency, accountName, categoryData, unclaimed, selected, setSelected, edits, setEdits, previouslySkipped, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
+function ReconcileView({ result, currency, accountName, categoryData, unclaimed, selected, setSelected, edits, setEdits, proposed, previouslySkipped, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
   result: StatementReconcile;
   currency: CurrencyConfig;
   accountName: string;
@@ -771,6 +779,8 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
   selected: Set<number>;
   setSelected: (s: Set<number>) => void;
   edits: Map<number, RowEdit>;
+  /** How each to-add row got its proposed name, keyed by sourceRow. */
+  proposed: Map<number, ProposedName>;
   /** Rows you left unticked last time — unticked again, and said so. */
   previouslySkipped: Set<number>;
   setEdits: (e: Map<number, RowEdit>) => void;
@@ -790,10 +800,33 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
     next.has(row) ? next.delete(row) : next.add(row);
     setSelected(next);
   };
+  // Rows sharing a technical key are the same merchant, so a decision about
+  // one is a decision about all of them: five rows from one shop take one
+  // typed name, not five. The count is shown beside the field, so the reach
+  // of an edit is never a surprise.
+  const keyOfRow = useMemo(
+    () => new Map(result.toAdd.map((r) => [r.sourceRow, technicalKey({ payee: r.payee, memo: r.memo })])),
+    [result.toAdd],
+  );
+  const rowsSharingKey = useMemo(() => {
+    const byKey = new Map<string, number[]>();
+    for (const r of result.toAdd) {
+      const k = keyOfRow.get(r.sourceRow)!;
+      if (!k) continue;
+      byKey.set(k, [...(byKey.get(k) ?? []), r.sourceRow]);
+    }
+    return byKey;
+  }, [result.toAdd, keyOfRow]);
   const edit = (row: number, patch: RowEdit) => {
+    const key = keyOfRow.get(row);
+    const targets = key ? (rowsSharingKey.get(key) ?? [row]) : [row];
     const next = new Map(edits);
-    next.set(row, { ...next.get(row), ...patch });
+    for (const r of targets) next.set(r, { ...next.get(r), ...patch });
     setEdits(next);
+  };
+  const siblingCount = (row: number): number => {
+    const key = keyOfRow.get(row);
+    return key ? (rowsSharingKey.get(key)?.length ?? 1) : 1;
   };
   const netAgrees = result.check.statementNet === result.check.budgetNet;
   // A statement that barely matches an account with history usually means the
@@ -878,12 +911,33 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
                     </Group>
                   </Table.Td>
                   <Table.Td>
-                    <TextInput
-                      size="xs"
-                      value={edits.get(r.sourceRow)?.payee ?? r.payee}
-                      onChange={(e) => edit(r.sourceRow, { payee: e.currentTarget.value })}
-                      disabled={!selected.has(r.sourceRow)}
-                    />
+                    <Group gap={4} wrap="nowrap">
+                      <TextInput
+                        size="xs"
+                        value={edits.get(r.sourceRow)?.payee ?? r.payee}
+                        onChange={(e) => edit(r.sourceRow, { payee: e.currentTarget.value })}
+                        disabled={!selected.has(r.sourceRow)}
+                        style={{ flex: 1 }}
+                      />
+                      {(() => {
+                        const from = proposed.get(r.sourceRow)?.from;
+                        const n = siblingCount(r.sourceRow);
+                        return (
+                          <>
+                            {(from === "bank" || from === "description") && (
+                              <Tooltip label="New to the budget — name it once here and it's remembered." withArrow>
+                                <Badge size="xs" color="yellow" variant="light">new</Badge>
+                              </Tooltip>
+                            )}
+                            {n > 1 && (
+                              <Tooltip label={`Same merchant string on ${n} rows — edits here apply to all of them.`} withArrow>
+                                <Badge size="xs" color="gray" variant="light">×{n}</Badge>
+                              </Tooltip>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </Group>
                   </Table.Td>
                   <Table.Td>
                     <Select

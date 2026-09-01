@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as ops from "./ops.js";
 import { fingerprint } from "./ids.js";
+import { nameIncomingRow } from "./import/payee.js";
 import { computeProjection } from "./engine/compute.js";
 import * as f from "../test/fixtures/factories.js";
 import type { Cents } from "./money.js";
@@ -560,7 +561,9 @@ describe("the payee master list", () => {
 
     const renamed = b.payees!.find((p) => p.id === northwind.id)!;
     expect(renamed.name).toBe("AS Northwind Bank");
-    expect(renamed.aliases).toEqual(["as northwind bank"]); // still points here
+    // The recorded alias survives, and the OLD spelling joins it — the rename
+    // itself is evidence that "northwind" means this payee.
+    expect([...renamed.aliases].sort()).toEqual(["as northwind bank", "northwind"]);
     expect(b.transactions.find((t) => t.id === f.tid("PT1"))!.payee).toBe("AS Northwind Bank");
   });
 
@@ -574,8 +577,31 @@ describe("the payee master list", () => {
 
     expect(b.payees).toHaveLength(1);
     expect(b.payees![0]!.name).toBe("Greengrocer");
-    expect([...b.payees![0]!.aliases].sort()).toEqual(["as northwind bank", "greengrocer oü"]);
+    // Both recorded aliases survive the merge, plus the merged-away name itself.
+    expect([...b.payees![0]!.aliases].sort()).toEqual(["as northwind bank", "greengrocer oü", "northwind"]);
     expect(b.transactions.filter((t) => t.payee === "Greengrocer")).toHaveLength(2);
+  });
+
+  it("a rename teaches the import: the old bank spelling becomes a live alias", () => {
+    // The commit-fast-tidy-later workflow: a processor string was committed as
+    // the payee, then renamed onto the real one in the payees screen. The next
+    // statement's row — different per-transaction id, same stem — must land on
+    // the real payee via the alias, no wizard correction needed.
+    let b = ops.ensurePayee(base(), "Rideco").budget;
+    b = ops.ensurePayee(b, "RIDECO.EU/O/1234567890").budget;
+    b = ops.renamePayee(b, "RIDECO.EU/O/1234567890", "Rideco");
+
+    const rideco = b.payees!.find((p) => p.name === "Rideco")!;
+    expect(rideco.aliases).toEqual(["rideco.eu/o"]); // the stem, not the dead id
+
+    const next = nameIncomingRow({ payee: "RIDECO.EU/O/9999999999", memo: "" }, b.payees!, new Map());
+    expect(next).toMatchObject({ payee: "Rideco", from: "alias" });
+  });
+
+  it("a case-only rename records no self-alias", () => {
+    let b = ops.ensurePayee(base(), "rideco").budget;
+    b = ops.renamePayee(b, "rideco", "Rideco");
+    expect(b.payees!.find((p) => p.name === "Rideco")!.aliases).toEqual([]);
   });
 
   it("gives an alias to exactly one payee", () => {
