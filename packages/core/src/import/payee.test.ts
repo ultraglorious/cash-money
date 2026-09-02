@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  aliasEvidenceFromMatches,
   lastCategoryByPayee,
   matchExistingPayee,
   nameIncomingRow,
@@ -165,6 +166,66 @@ describe("nameIncomingRow", () => {
       payee: "Northwind fees",
       from: "alias",
     });
+  });
+});
+
+describe("aliasEvidenceFromMatches", () => {
+  const mk = (id: string, payee: string, transfer = false) =>
+    f.txn({
+      id: f.tid(id), accountId: CHK, date: "2026-01-10", amount: -1000 as Cents, categoryId: GRO, payee,
+      ...(transfer ? { categoryId: undefined, transfer: { counterAccountId: f.tid("AX"), pairId: f.tid("PX") } } : {}),
+    });
+  function budgetWith(txs: ReturnType<typeof mk>[], payees: Payee[] = []): LoadedBudget {
+    return {
+      budget: f.budget(),
+      accounts: [f.account({ id: CHK, name: "Checking", type: "checking" })],
+      groups: [f.group({ id: GEVD, name: "Everyday", kind: "normal" })],
+      categories: [f.category({ id: GRO, groupId: GEVD, name: "Groceries" })],
+      assignments: [],
+      transactions: txs,
+      payees,
+    };
+  }
+  const row = (payee: string, memo = "") => ({ payee, memo });
+
+  it("pairs the bank string with the curated payee of the transaction it settled", () => {
+    const b = budgetWith([mk("T1", "Verlan")]);
+    const { learn } = aliasEvidenceFromMatches(b, [
+      { txId: f.tid("T1"), kind: "exact", rows: [row("VESKI VERLANI ISETEENI")] },
+    ]);
+    expect([...learn.entries()]).toEqual([["veski verlani iseteeni", "Verlan"]]);
+  });
+
+  it("takes only unanimous evidence — a string matched to two payees teaches nothing", () => {
+    const b = budgetWith([mk("T1", "Verlan"), mk("T2", "Kesa")]);
+    const { learn, conflicted } = aliasEvidenceFromMatches(b, [
+      { txId: f.tid("T1"), kind: "exact", rows: [row("GENERIC CARD PAYMENT 1")] },
+      { txId: f.tid("T2"), kind: "exact", rows: [row("GENERIC CARD PAYMENT 1")] },
+    ]);
+    expect(learn.size).toBe(0);
+    expect(conflicted).toBe(1);
+  });
+
+  it("skips transfer legs, mixed-merchant combos, self-keys, and keys already on record", () => {
+    const b = budgetWith(
+      [mk("T1", "Transfer to: Savings", true), mk("T2", "Verlan"), mk("T3", "Verlan"), mk("T4", "Kesa")],
+      [{ id: f.tid("PK"), name: "Kesa", aliases: ["claimed key"] }],
+    );
+    const { learn } = aliasEvidenceFromMatches(b, [
+      { txId: f.tid("T1"), kind: "exact", rows: [row("STANDING ORDER")] }, // transfer leg
+      { txId: f.tid("T2"), kind: "combo", sameMerchant: false, rows: [row("A"), row("B")] }, // mixed combo
+      { txId: f.tid("T3"), kind: "exact", rows: [row("Verlan")] }, // self-key
+      { txId: f.tid("T4"), kind: "exact", rows: [row("CLAIMED KEY")] }, // user already decided
+    ]);
+    expect(learn.size).toBe(0);
+  });
+
+  it("keeps a single-merchant combo — several swipes, one shop, one lesson", () => {
+    const b = budgetWith([mk("T1", "Verlan")]);
+    const { learn } = aliasEvidenceFromMatches(b, [
+      { txId: f.tid("T1"), kind: "combo", sameMerchant: true, rows: [row("VERLANI POOD 1"), row("VERLANI POOD 1")] },
+    ]);
+    expect(learn.get("verlani pood 1")).toBe("Verlan");
   });
 });
 

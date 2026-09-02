@@ -180,6 +180,56 @@ export function lastCategoryByPayee(b: LoadedBudget, opts: { household?: string 
   return out;
 }
 
+/**
+ * The mapping history already proves.
+ *
+ * The reconciler pairs statement rows with budget rows by amount and date,
+ * independent of names — so every match says "this bank string and this curated
+ * payee are the same physical transaction". Nine years of renaming is sitting
+ * in those pairs, and harvesting them teaches mappings no heuristic could
+ * derive. Re-importing an old statement becomes a way to replay history: the
+ * matches absorb every row, nothing is added, and the aliases are banked.
+ *
+ * Guards, because history contains noise:
+ *  - transfer legs are skipped (their payee is derived text, not a name);
+ *  - combo matches count only when every statement row came from one merchant;
+ *  - a key is learned only when its evidence is UNANIMOUS — a generic string
+ *    matched to three different payees over the years teaches nothing safe;
+ *  - keys already recorded as an alias anywhere are left alone: an explicit
+ *    earlier decision outranks inference.
+ */
+export function aliasEvidenceFromMatches(
+  b: LoadedBudget,
+  matches: readonly { txId: Ulid; kind: string; sameMerchant?: boolean; rows: readonly { payee: string; memo: string }[] }[],
+): { learn: Map<string, string>; conflicted: number } {
+  const txById = new Map(b.transactions.map((t) => [t.id, t]));
+  const existing = new Set((b.payees ?? []).flatMap((p) => p.aliases));
+
+  const evidence = new Map<string, Map<string, string>>(); // key -> foldedName -> displayName
+  for (const m of matches) {
+    if (m.kind === "combo" && !m.sameMerchant) continue;
+    const t = txById.get(m.txId);
+    if (!t || t.transfer) continue;
+    const name = trimN(t.payee);
+    if (!name) continue;
+    for (const row of m.rows) {
+      const key = technicalKey(row);
+      if (!key || key === fold(name) || existing.has(key)) continue;
+      const names = evidence.get(key) ?? new Map<string, string>();
+      names.set(fold(name), name);
+      evidence.set(key, names);
+    }
+  }
+
+  const learn = new Map<string, string>();
+  let conflicted = 0;
+  for (const [key, names] of evidence) {
+    if (names.size === 1) learn.set(key, [...names.values()][0]!);
+    else conflicted++;
+  }
+  return { learn, conflicted };
+}
+
 export interface ProposedName {
   payee: string;
   categoryId?: Ulid;

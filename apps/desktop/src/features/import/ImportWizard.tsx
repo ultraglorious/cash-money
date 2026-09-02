@@ -29,6 +29,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   buildStatementTransactions,
   deduceInvoiceCoverage,
+  aliasEvidenceFromMatches,
   findTransferCandidates,
   formatFitsHeaders,
   lastCategoryByPayee,
@@ -618,24 +619,37 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       });
       app.addTransactions(added);
 
-      // Learn from corrections AND from accepted heuristic matches. A correction
-      // is the user's word; an accepted match graduates that merchant from the
-      // heuristic to an exact alias, which also survives the payee being renamed
-      // later (the matcher would re-derive from the new name and could lose it).
-      // Rows kept under the bank's own name or the derived description teach
-      // nothing worth storing — next time the same string arrives, the same
-      // fallback produces the same result. Keys are noise-stripped stems, so a
-      // per-transaction id never enters the alias list.
-      const toLearn = new Map<string, string>();
-      for (const row of rows) {
-        const proposal = proposed.get(row.sourceRow);
-        const chosen = (edits.get(row.sourceRow)?.payee ?? proposal?.payee ?? row.payee).trim();
-        const key = technicalKey({ payee: row.payee, memo: row.memo });
-        if (!chosen || !key) continue;
-        const corrected = !proposal || chosen !== proposal.payee;
-        if (corrected || proposal.from === "match") toLearn.set(key, chosen);
-      }
-      for (const [key, chosen] of toLearn) app.rememberPayeeAlias(chosen, key);
+    }
+
+    // Learning happens on every commit, even one that adds nothing — that is
+    // what lets an old statement be re-imported purely to harvest its history.
+    //
+    // Two sources of truth, weakest first so the stronger overwrites:
+    //  - MATCHED rows pair the bank's string with the curated payee of the very
+    //    transaction it settled against — nine years of renames, replayed. Only
+    //    unanimous evidence is taken (aliasEvidenceFromMatches guards the rest).
+    //  - The rows committed just now: a correction is the user's word, and an
+    //    accepted heuristic match graduates that merchant to an exact alias
+    //    that survives later renames. Rows kept under the bank's own name or
+    //    the derived description teach nothing worth storing.
+    // Keys are noise-stripped stems, so a per-transaction id never enters the
+    // alias list.
+    const { learn: toLearn } = aliasEvidenceFromMatches(app.budget, result.matches);
+    for (const row of rows) {
+      const proposal = proposed.get(row.sourceRow);
+      const chosen = (edits.get(row.sourceRow)?.payee ?? proposal?.payee ?? row.payee).trim();
+      const key = technicalKey({ payee: row.payee, memo: row.memo });
+      if (!chosen || !key) continue;
+      const corrected = !proposal || chosen !== proposal.payee;
+      if (corrected || proposal.from === "match") toLearn.set(key, chosen);
+    }
+    for (const [key, chosen] of toLearn) app.rememberPayeeAlias(chosen, key);
+    if (toLearn.size > 0) {
+      notifications.show({
+        color: "teal",
+        title: `Remembered ${toLearn.size} bank spelling${toLearn.size === 1 ? "" : "s"}`,
+        message: "Future statements will name these rows the way you do, automatically.",
+      });
     }
     if (result.parsedRows > 0) {
       // Matched card rows are verified, not paid — only the through-date
