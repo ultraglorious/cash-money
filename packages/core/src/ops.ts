@@ -397,6 +397,93 @@ export interface TransferArgs {
   recurrence?: Transaction["recurrence"];
 }
 
+/**
+ * Turn one existing plain transaction into a transfer leg to `counterAccountId`.
+ *
+ * If that account already holds the matching row — equal and opposite amount
+ * within a few days, not itself a transfer, and not an arriving leg that
+ * carries a spending envelope (that's a refund; the category is the point of
+ * the row) — the two are LINKED and nothing is created: a leg that arrived by
+ * statement import is simply recognised for what it always was. Otherwise the
+ * missing leg is MINTED as uncleared, to be confirmed when that account's own
+ * statement turns up and matches it.
+ *
+ * Unlike findTransferCandidates/linkTransfers this is not a guess — the user
+ * named the counter account — so it works within one budget scope and with
+ * credit cards. The card case is the whole point: invoice deduction only
+ * recognises payments that are transfer legs into the card, so a card payment
+ * imported as a categorised row can never settle its billing window.
+ */
+const COUNTERPART_MAX_DAYS = 10;
+export function convertToTransfer(
+  b: LoadedBudget,
+  txId: Ulid,
+  counterAccountId: Ulid,
+): { budget: LoadedBudget; counterpart: "linked" | "minted" | "unchanged" } {
+  const tx = b.transactions.find((t) => t.id === txId);
+  const counterName = b.accounts.find((a) => a.id === counterAccountId)?.name;
+  if (!tx || tx.transfer || tx.accountId === counterAccountId || !counterName) {
+    return { budget: b, counterpart: "unchanged" };
+  }
+  const thisName = b.accounts.find((a) => a.id === tx.accountId)?.name ?? "—";
+  const incomeGroups = new Set(b.groups.filter((g) => g.kind === "income").map((g) => g.id));
+  const incomeCats = new Set(b.categories.filter((c) => incomeGroups.has(c.groupId)).map((c) => c.id));
+  const day = (iso: ISODate): number => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86_400_000);
+
+  const candidates = b.transactions
+    .filter(
+      (t) =>
+        t.accountId === counterAccountId &&
+        !t.transfer &&
+        !t.splits &&
+        t.amount === -tx.amount &&
+        Math.abs(day(t.date) - day(tx.date)) <= COUNTERPART_MAX_DAYS &&
+        !(t.amount > 0 && t.categoryId && !incomeCats.has(t.categoryId)),
+    )
+    .sort((x, y) => {
+      const gx = Math.abs(day(x.date) - day(tx.date));
+      const gy = Math.abs(day(y.date) - day(tx.date));
+      return gx !== gy ? gx - gy : x.id < y.id ? -1 : 1;
+    });
+
+  const pairId = newId();
+  // The arriving leg's income category (if any) dissolves into the link; the
+  // outflow leg keeps its envelope — same rules as linkTransfers.
+  const asLeg = (t: Transaction, counter: Ulid, otherName: string): Transaction => ({
+    ...t,
+    payee: transferPayee(t.amount, otherName),
+    ...(t.amount > 0 ? { categoryId: undefined } : {}),
+    transfer: { counterAccountId: counter, pairId },
+  });
+
+  const existing = candidates[0];
+  const patched = new Map<Ulid, Transaction>();
+  patched.set(tx.id, asLeg(tx, counterAccountId, counterName));
+  if (existing) {
+    patched.set(existing.id, asLeg(existing, tx.accountId, thisName));
+    return {
+      budget: { ...b, transactions: b.transactions.map((t) => patched.get(t.id) ?? t) },
+      counterpart: "linked",
+    };
+  }
+  const minted: Transaction = {
+    id: newId(),
+    accountId: counterAccountId,
+    date: tx.date,
+    effectiveDate: tx.date,
+    payee: transferPayee(-tx.amount, thisName),
+    memo: tx.memo,
+    amount: -tx.amount as Cents,
+    cleared: "uncleared",
+    approved: tx.approved,
+    transfer: { counterAccountId: tx.accountId, pairId },
+  };
+  return {
+    budget: { ...b, transactions: [...b.transactions.map((t) => patched.get(t.id) ?? t), minted] },
+    counterpart: "minted",
+  };
+}
+
 /** Record money moving between two accounts: both legs, linked by a pair id. */
 export function addTransfer(b: LoadedBudget, args: TransferArgs): LoadedBudget {
   const nameOf = (id: Ulid): string => b.accounts.find((a) => a.id === id)?.name ?? "—";

@@ -105,6 +105,8 @@ interface Actions {
   addTransactions: (txs: Transaction[]) => void;
   /** Record money moving between two accounts (creates both linked legs). */
   addTransfer: (args: ops.TransferArgs) => void;
+  /** Make an existing plain row a transfer leg — links the counterpart if the budget already holds it, mints it (uncleared) otherwise. */
+  convertToTransfer: (txId: Ulid, counterAccountId: Ulid) => void;
   /** Edit one transfer leg; the other mirrors (amount/date/memo/accounts). */
   updateTransfer: (id: Ulid, patch: { accountId?: Ulid; counterAccountId?: Ulid; date?: string; amount?: Cents; memo?: string; cleared?: "cleared" | "uncleared" | "reconciled"; categoryId?: Ulid; recurrence?: Transaction["recurrence"] }) => void;
   setTransactions: (txs: Transaction[]) => void;
@@ -579,6 +581,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addTransaction: (tx) => apply((b) => ops.addTransaction(b, tx)),
       addTransactions: (txs) => apply((b) => ops.addTransactions(b, txs)),
       addTransfer: (args) => apply((b) => ops.addTransfer(b, args)),
+      convertToTransfer: (txId, counterAccountId) => apply((b) => ops.convertToTransfer(b, txId, counterAccountId).budget),
       updateTransfer: (id, patch) => apply((b) => ops.updateTransfer(b, id, patch)),
       setTransactions: (txs) => apply((b) => ops.setTransactions(b, txs)),
       updateTransaction: (id, patch) => apply((b) => ops.updateTransaction(b, id, patch)),
