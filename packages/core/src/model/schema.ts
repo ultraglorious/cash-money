@@ -128,6 +128,12 @@ export const PayeeSchema = z.object({
   aliases: z.array(z.string()).default([]),
 });
 
+export const TransferAliasSchema = z.object({
+  key: z.string(),
+  accountId: ulid,
+  counterAccountId: ulid,
+});
+
 export const AppIndexSchema = z.object({
   schemaVersion: z.number().int(),
   activeBudgetId: ulid.optional(),

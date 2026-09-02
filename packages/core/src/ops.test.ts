@@ -622,6 +622,59 @@ describe("making an imported row a transfer", () => {
   });
 });
 
+describe("learned transfer meanings", () => {
+  const CARD = f.tid("ACRD");
+  const SAV = f.tid("ASAV");
+  function withAccounts(): LoadedBudget {
+    const b = base();
+    return {
+      ...b,
+      accounts: [
+        ...b.accounts,
+        f.account({ id: CARD, name: "Card", type: "creditCard" }),
+        f.account({ id: SAV, name: "Savings", type: "checking" }),
+      ],
+    };
+  }
+
+  it("remembering is one entry per (account, key), latest target wins; forgetting removes it", () => {
+    let b = ops.rememberTransferAlias(withAccounts(), "card payment", CARD, CHK);
+    b = ops.rememberTransferAlias(b, "card payment", CARD, SAV);
+    expect(b.transferAliases).toEqual([{ key: "card payment", accountId: CARD, counterAccountId: SAV }]);
+    expect(ops.rememberTransferAlias(b, "  ", CARD, CHK).transferAliases).toHaveLength(1); // blank key learns nothing
+    expect(ops.rememberTransferAlias(b, "x", CARD, CARD).transferAliases).toHaveLength(1); // self-transfer learns nothing
+    expect(ops.removeTransferAlias(b, "card payment", CARD).transferAliases).toEqual([]);
+  });
+
+  it("a learned alias proposes its transfer on any account, purchase-shaped or not", () => {
+    const b = ops.rememberTransferAlias(withAccounts(), "standing order", CHK, SAV);
+    const target = ops.proposeImportTransfer(b, { key: "standing order", accountId: CHK, date: "2026-02-10", amount: -25000 as Cents });
+    expect(target).toBe(SAV);
+    // Same key on a DIFFERENT account means nothing — the alias is per-account.
+    expect(ops.proposeImportTransfer(b, { key: "standing order", accountId: SAV, date: "2026-02-10", amount: -25000 as Cents })).toBeUndefined();
+  });
+
+  it("recognises the card-payment shape unprompted: incoming on a card, twin in exactly one account", () => {
+    const b0 = withAccounts();
+    const twin = f.txn({ id: f.tid("TTWN"), accountId: CHK, date: "2026-02-09", amount: -49965 as Cents, categoryId: undefined });
+    const b = { ...b0, transactions: [...b0.transactions, twin] };
+    const target = ops.proposeImportTransfer(b, { key: "payment received", accountId: CARD, date: "2026-02-10", amount: 49965 as Cents });
+    expect(target).toBe(CHK);
+    // An outgoing card row is a purchase, not a payment.
+    expect(ops.proposeImportTransfer(b, { key: "shop", accountId: CARD, date: "2026-02-10", amount: -49965 as Cents })).toBeUndefined();
+    // The same shape on a cash account is not proposed — only cards.
+    expect(ops.proposeImportTransfer(b, { key: "arrival", accountId: SAV, date: "2026-02-10", amount: 49965 as Cents })).toBeUndefined();
+  });
+
+  it("twins in two accounts propose nothing — a proposal must never guess", () => {
+    const b0 = withAccounts();
+    const t1 = f.txn({ id: f.tid("TTW1"), accountId: CHK, date: "2026-02-09", amount: -49965 as Cents, categoryId: undefined });
+    const t2 = f.txn({ id: f.tid("TTW2"), accountId: SAV, date: "2026-02-11", amount: -49965 as Cents, categoryId: undefined });
+    const b = { ...b0, transactions: [...b0.transactions, t1, t2] };
+    expect(ops.proposeImportTransfer(b, { key: "payment received", accountId: CARD, date: "2026-02-10", amount: 49965 as Cents })).toBeUndefined();
+  });
+});
+
 describe("the payee master list", () => {
   const withPayees = (): LoadedBudget => ({
     ...base(),

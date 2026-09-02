@@ -160,6 +160,23 @@ export interface Payee {
   aliases: string[];
 }
 
+/**
+ * A statement string that, on one account, always means a transfer.
+ *
+ * The payee aliases answer the recurring question "what is this row called";
+ * these answer the other one — "this row is not a purchase at all". Recorded
+ * when the user marks an imported row as a transfer, so next month's card
+ * payment (the canonical case) arrives already marked. `key` is the same
+ * noise-stripped stem the payee aliases use.
+ */
+export interface TransferAlias {
+  key: string;
+  /** The account whose statement the row appears on. */
+  accountId: Ulid;
+  /** The other side of the transfer. */
+  counterAccountId: Ulid;
+}
+
 export interface LoadedBudget {
   budget: Budget;
   accounts: Account[];
@@ -173,4 +190,6 @@ export interface LoadedBudget {
    * fills it from the transactions on load; treat undefined as empty.
    */
   payees?: Payee[];
+  /** Optional for the same reason `payees` is; treat undefined as empty. */
+  transferAliases?: TransferAlias[];
 }

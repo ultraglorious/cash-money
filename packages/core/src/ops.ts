@@ -415,24 +415,26 @@ export interface TransferArgs {
  * imported as a categorised row can never settle its billing window.
  */
 const COUNTERPART_MAX_DAYS = 10;
-export function convertToTransfer(
+
+/**
+ * The row `tx` would pair with in `counterAccountId`, if it already exists:
+ * equal and opposite amount within a few days, not itself a transfer or a
+ * split, and not an arriving leg that carries a spending envelope (a refund).
+ * Nearest date wins, deterministically. Exposed so the import wizard can say
+ * up front whether marking a row as a transfer will LINK or MINT.
+ */
+export function findTransferCounterpart(
   b: LoadedBudget,
-  txId: Ulid,
+  tx: { id?: Ulid; accountId: Ulid; date: ISODate; amount: Cents },
   counterAccountId: Ulid,
-): { budget: LoadedBudget; counterpart: "linked" | "minted" | "unchanged" } {
-  const tx = b.transactions.find((t) => t.id === txId);
-  const counterName = b.accounts.find((a) => a.id === counterAccountId)?.name;
-  if (!tx || tx.transfer || tx.accountId === counterAccountId || !counterName) {
-    return { budget: b, counterpart: "unchanged" };
-  }
-  const thisName = b.accounts.find((a) => a.id === tx.accountId)?.name ?? "—";
+): Transaction | undefined {
   const incomeGroups = new Set(b.groups.filter((g) => g.kind === "income").map((g) => g.id));
   const incomeCats = new Set(b.categories.filter((c) => incomeGroups.has(c.groupId)).map((c) => c.id));
   const day = (iso: ISODate): number => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86_400_000);
-
-  const candidates = b.transactions
+  return b.transactions
     .filter(
       (t) =>
+        t.id !== tx.id &&
         t.accountId === counterAccountId &&
         !t.transfer &&
         !t.splits &&
@@ -444,8 +446,20 @@ export function convertToTransfer(
       const gx = Math.abs(day(x.date) - day(tx.date));
       const gy = Math.abs(day(y.date) - day(tx.date));
       return gx !== gy ? gx - gy : x.id < y.id ? -1 : 1;
-    });
+    })[0];
+}
 
+export function convertToTransfer(
+  b: LoadedBudget,
+  txId: Ulid,
+  counterAccountId: Ulid,
+): { budget: LoadedBudget; counterpart: "linked" | "minted" | "unchanged" } {
+  const tx = b.transactions.find((t) => t.id === txId);
+  const counterName = b.accounts.find((a) => a.id === counterAccountId)?.name;
+  if (!tx || tx.transfer || tx.accountId === counterAccountId || !counterName) {
+    return { budget: b, counterpart: "unchanged" };
+  }
+  const thisName = b.accounts.find((a) => a.id === tx.accountId)?.name ?? "—";
   const pairId = newId();
   // The arriving leg's income category (if any) dissolves into the link; the
   // outflow leg keeps its envelope — same rules as linkTransfers.
@@ -456,7 +470,7 @@ export function convertToTransfer(
     transfer: { counterAccountId: counter, pairId },
   });
 
-  const existing = candidates[0];
+  const existing = findTransferCounterpart(b, tx, counterAccountId);
   const patched = new Map<Ulid, Transaction>();
   patched.set(tx.id, asLeg(tx, counterAccountId, counterName));
   if (existing) {
@@ -482,6 +496,47 @@ export function convertToTransfer(
     budget: { ...b, transactions: [...b.transactions.map((t) => patched.get(t.id) ?? t), minted] },
     counterpart: "minted",
   };
+}
+
+/**
+ * Remember that this statement string, on this account, means a transfer to
+ * `counterAccountId` — so next month's row arrives already marked. One entry
+ * per (account, key); marking again with a different target replaces it.
+ */
+export function rememberTransferAlias(b: LoadedBudget, key: string, accountId: Ulid, counterAccountId: Ulid): LoadedBudget {
+  if (!key.trim() || accountId === counterAccountId) return b;
+  const rest = (b.transferAliases ?? []).filter((a) => !(a.accountId === accountId && a.key === key));
+  return { ...b, transferAliases: [...rest, { key, accountId, counterAccountId }] };
+}
+
+/** Forget a learned transfer meaning — the user filed the row as something else. */
+export function removeTransferAlias(b: LoadedBudget, key: string, accountId: Ulid): LoadedBudget {
+  const rest = (b.transferAliases ?? []).filter((a) => !(a.accountId === accountId && a.key === key));
+  return rest.length === (b.transferAliases ?? []).length ? b : { ...b, transferAliases: rest };
+}
+
+/**
+ * Should an incoming statement row be proposed as a transfer before the user
+ * says anything? Two sources, strongest first:
+ *  - a remembered transfer alias for this row's text on this account;
+ *  - the card-payment shape: money arriving on a credit card whose equal and
+ *    opposite twin already sits in exactly ONE other account. Twins in two
+ *    accounts propose nothing — a proposal must never guess.
+ */
+export function proposeImportTransfer(
+  b: LoadedBudget,
+  row: { key: string; accountId: Ulid; date: ISODate; amount: Cents },
+): Ulid | undefined {
+  const learned = row.key
+    ? (b.transferAliases ?? []).find((a) => a.accountId === row.accountId && a.key === row.key)
+    : undefined;
+  if (learned && b.accounts.some((a) => a.id === learned.counterAccountId)) return learned.counterAccountId;
+  const acct = b.accounts.find((a) => a.id === row.accountId);
+  if (acct?.type !== "creditCard" || row.amount <= 0) return undefined;
+  const hits = b.accounts.filter(
+    (a) => a.id !== row.accountId && !!findTransferCounterpart(b, { accountId: row.accountId, date: row.date, amount: row.amount }, a.id),
+  );
+  return hits.length === 1 ? hits[0]!.id : undefined;
 }
 
 /** Record money moving between two accounts: both legs, linked by a pair id. */
