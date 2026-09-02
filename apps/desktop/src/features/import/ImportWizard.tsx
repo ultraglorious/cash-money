@@ -715,6 +715,18 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   const unclaimedTxs = result
     ? result.unclaimedBudget.map((id) => app.budget.transactions.find((t) => t.id === id)).filter((t): t is Transaction => !!t)
     : [];
+  // The newest transaction already in the account — the user's own heuristic
+  // for "everything after this date is new; anything on or before it deserves
+  // a second look before adding".
+  const latestRecorded = useMemo(() => {
+    if (!accountId) return null;
+    let latest: string | null = null;
+    for (const t of app.budget.transactions) {
+      if (t.accountId !== accountId) continue;
+      if (!latest || t.date > latest) latest = t.date;
+    }
+    return latest;
+  }, [app.budget.transactions, accountId]);
 
   return (
     <Stack>
@@ -776,6 +788,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       {result && (
         <ReconcileView
           result={result}
+          latestRecorded={latestRecorded}
           currency={app.currency}
           accountName={accountId ? app.accountName(accountId as Ulid) : ""}
           categoryData={categoryData}
@@ -799,7 +812,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ReconcileView({ result, currency, accountName, accountId, categoryData, unclaimed, selected, setSelected, edits, setEdits, proposed, previouslySkipped, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
+function ReconcileView({ result, currency, accountName, accountId, latestRecorded, categoryData, unclaimed, selected, setSelected, edits, setEdits, proposed, previouslySkipped, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
   result: StatementReconcile;
   currency: CurrencyConfig;
   accountName: string;
@@ -810,6 +823,8 @@ function ReconcileView({ result, currency, accountName, accountId, categoryData,
   edits: Map<number, RowEdit>;
   /** The account being imported into — split lines scope to its household. */
   accountId: Ulid | null;
+  /** Date of the newest transaction already recorded in this account, if any. */
+  latestRecorded: string | null;
   /** How each to-add row got its proposed name, keyed by sourceRow. */
   proposed: Map<number, ProposedName>;
   /** Rows you left unticked last time — unticked again, and said so. */
@@ -901,6 +916,13 @@ function ReconcileView({ result, currency, accountName, accountId, categoryData,
         {netAgrees ? " ✓" : " (will converge as missing rows are added)"}
       </Text>
 
+      {latestRecorded && (
+        <Text size="xs" c="dimmed">
+          Newest transaction already recorded in “{accountName}”: <Text span size="xs" fw={600} c="var(--mantine-color-text)">{latestRecorded}</Text>.
+          Rows after that date are new to the budget; rows on or before it are worth a second look before adding.
+        </Text>
+      )}
+
       {lowMatch && (
         <Alert color="orange" mt="xs" icon={<IconAlertTriangle size={16} />}>
           Only {explained} of {result.parsedRows} statement rows matched anything in “{accountName}”. If this period
@@ -946,7 +968,13 @@ function ReconcileView({ result, currency, accountName, accountId, categoryData,
                   <Table.Td><Checkbox checked={selected.has(r.sourceRow)} onChange={() => toggle(r.sourceRow)} aria-label="Include row" /></Table.Td>
                   <Table.Td>
                     <Group gap={6} wrap="nowrap">
-                      <Text size="sm">{r.date}</Text>
+                      {latestRecorded && r.date <= latestRecorded ? (
+                        <Tooltip label={`On or before the newest recorded transaction (${latestRecorded}) — it may already be in the budget in another form.`} withArrow>
+                          <Text size="sm" c="orange">{r.date}</Text>
+                        </Tooltip>
+                      ) : (
+                        <Text size="sm">{r.date}</Text>
+                      )}
                       {previouslySkipped.has(r.sourceRow) && (
                         <Tooltip label="You left this out of an earlier import, so it starts unticked. Tick it to bring it in." withArrow>
                           <Badge size="xs" color="gray" variant="light">skipped before</Badge>
