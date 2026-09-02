@@ -24,7 +24,7 @@ import {
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
-import { IconAlertTriangle, IconFileImport, IconTrash } from "@tabler/icons-react";
+import { IconAlertTriangle, IconFileImport, IconTrash, IconX } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   buildStatementTransactions,
@@ -46,7 +46,9 @@ import {
   type InvoiceCoverage,
   type RegisterFormat,
   type ProposedName,
+  type Cents,
   type SavedFormat,
+  type SplitLine,
   type StagingResult,
   type StatementReconcile,
   type Transaction,
@@ -54,6 +56,7 @@ import {
 } from "@cash-money/core";
 import { useApp } from "../../state";
 import { LinkTransfersModal } from "../transactions/LinkTransfersModal";
+import { SplitEditorModal } from "../transactions/SplitEditorModal";
 import { categoryOptions, incomeCategoryOptions } from "../../categoryOptions";
 import { money } from "../../format";
 import { isTauri, readTextAbs, readZipCsvs } from "../../platform/tauriFs";
@@ -68,6 +71,7 @@ import {
 } from "./FormatMappingForm";
 
 const IMPORT_LINK_NOTIFICATION = "import-link-transfers";
+const SPLIT_ROW = "__split__";
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "src";
 const today = () => new Date().toISOString().slice(0, 10);
@@ -390,6 +394,8 @@ interface ParsedCsvFile {
 interface RowEdit {
   payee?: string;
   categoryId?: string | null;
+  /** Present => the row lands split across categories instead of taking one. */
+  splits?: SplitLine[];
 }
 
 /** Structural identity of a mapping — same columns, regardless of id/name. */
@@ -615,7 +621,15 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       added = built.map((tx, i) => {
         const e = edits.get(rows[i]!.sourceRow);
         const payee = e?.payee?.trim();
-        return { ...tx, ...(payee ? { payee } : {}), ...(e?.categoryId ? { categoryId: e.categoryId as Ulid } : {}) };
+        return {
+          ...tx,
+          ...(payee ? { payee } : {}),
+          ...(e?.splits
+            ? { splits: e.splits, categoryId: undefined }
+            : e?.categoryId
+              ? { categoryId: e.categoryId as Ulid }
+              : {}),
+        };
       });
       app.addTransactions(added);
 
@@ -769,6 +783,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
           selected={selected}
           setSelected={setSelected}
           edits={edits}
+          accountId={accountId as Ulid | null}
           proposed={proposed}
           previouslySkipped={previouslySkipped}
           setEdits={setEdits}
@@ -784,7 +799,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ReconcileView({ result, currency, accountName, categoryData, unclaimed, selected, setSelected, edits, setEdits, proposed, previouslySkipped, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
+function ReconcileView({ result, currency, accountName, accountId, categoryData, unclaimed, selected, setSelected, edits, setEdits, proposed, previouslySkipped, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
   result: StatementReconcile;
   currency: CurrencyConfig;
   accountName: string;
@@ -793,6 +808,8 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
   selected: Set<number>;
   setSelected: (s: Set<number>) => void;
   edits: Map<number, RowEdit>;
+  /** The account being imported into — split lines scope to its household. */
+  accountId: Ulid | null;
   /** How each to-add row got its proposed name, keyed by sourceRow. */
   proposed: Map<number, ProposedName>;
   /** Rows you left unticked last time — unticked again, and said so. */
@@ -835,9 +852,21 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
     const key = keyOfRow.get(row);
     const targets = key ? (rowsSharingKey.get(key) ?? [row]) : [row];
     const next = new Map(edits);
-    for (const r of targets) next.set(r, { ...next.get(r), ...patch });
+    // Picking a category is a statement about the merchant, so it clears any
+    // split on the rows it reaches — the two are mutually exclusive.
+    const clear = "categoryId" in patch ? { splits: undefined } : {};
+    for (const r of targets) next.set(r, { ...next.get(r), ...patch, ...clear });
     setEdits(next);
   };
+  // A split is about ONE row — it must sum to that row's amount — so unlike the
+  // other edits it never batches across the merchant's siblings.
+  const editSplits = (row: number, splits: SplitLine[] | undefined) => {
+    const next = new Map(edits);
+    next.set(row, { ...next.get(row), splits, categoryId: undefined });
+    setEdits(next);
+  };
+  const [splitting, setSplitting] = useState<number | null>(null);
+  const splittingRow = splitting === null ? null : (result.toAdd.find((r) => r.sourceRow === splitting) ?? null);
   const siblingCount = (row: number): number => {
     const key = keyOfRow.get(row);
     return key ? (rowsSharingKey.get(key)?.length ?? 1) : 1;
@@ -954,16 +983,30 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
                     </Group>
                   </Table.Td>
                   <Table.Td>
-                    <Select
-                      size="xs"
-                      placeholder="Category"
-                      data={categoryData}
-                      value={edits.get(r.sourceRow)?.categoryId ?? null}
-                      onChange={(v) => edit(r.sourceRow, { categoryId: v })}
-                      searchable
-                      clearable
-                      disabled={!selected.has(r.sourceRow)}
-                    />
+                    {edits.get(r.sourceRow)?.splits ? (
+                      <Group gap={4} wrap="nowrap">
+                        <Badge color="grape" variant="light" style={{ cursor: "pointer" }} onClick={() => setSplitting(r.sourceRow)}>
+                          Split ({edits.get(r.sourceRow)!.splits!.length})
+                        </Badge>
+                        <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => editSplits(r.sourceRow, undefined)} aria-label="Clear split">
+                          <IconX size={13} />
+                        </ActionIcon>
+                      </Group>
+                    ) : (
+                      <Select
+                        size="xs"
+                        placeholder="Category"
+                        data={[{ value: SPLIT_ROW, label: "⑂ Split between categories…" }, ...categoryData]}
+                        value={edits.get(r.sourceRow)?.categoryId ?? null}
+                        onChange={(v) => {
+                          if (v === SPLIT_ROW) setSplitting(r.sourceRow);
+                          else edit(r.sourceRow, { categoryId: v });
+                        }}
+                        searchable
+                        clearable
+                        disabled={!selected.has(r.sourceRow)}
+                      />
+                    )}
                   </Table.Td>
                   <Table.Td ta="right">{amountCell(r.amount)}</Table.Td>
                 </Table.Tr>
@@ -1048,6 +1091,26 @@ function ReconcileView({ result, currency, accountName, categoryData, unclaimed,
               : "Done"}
         </Button>
       </Group>
+
+      <SplitEditorModal
+        opened={splitting !== null}
+        onClose={() => setSplitting(null)}
+        amount={(splittingRow?.amount ?? 0) as Cents}
+        accountId={accountId}
+        initialSplits={splitting !== null ? edits.get(splitting)?.splits : undefined}
+        onSave={(splits) => {
+          if (splitting !== null) editSplits(splitting, splits);
+          setSplitting(null);
+        }}
+        onUnsplit={
+          splitting !== null && edits.get(splitting)?.splits
+            ? () => {
+                editSplits(splitting, undefined);
+                setSplitting(null);
+              }
+            : undefined
+        }
+      />
     </Paper>
   );
 }
