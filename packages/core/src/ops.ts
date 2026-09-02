@@ -1,4 +1,5 @@
 import { newId, type Ulid } from "./ids.js";
+import { technicalKey } from "./import/payee.js";
 import type { Cents } from "./money.js";
 import { nextOccurrence, type ISODate, type MonthKey } from "./time.js";
 import { computeProjection } from "./engine/compute.js";
@@ -396,6 +397,148 @@ export interface TransferArgs {
   recurrence?: Transaction["recurrence"];
 }
 
+/**
+ * Turn one existing plain transaction into a transfer leg to `counterAccountId`.
+ *
+ * If that account already holds the matching row — equal and opposite amount
+ * within a few days, not itself a transfer, and not an arriving leg that
+ * carries a spending envelope (that's a refund; the category is the point of
+ * the row) — the two are LINKED and nothing is created: a leg that arrived by
+ * statement import is simply recognised for what it always was. Otherwise the
+ * missing leg is MINTED as uncleared, to be confirmed when that account's own
+ * statement turns up and matches it.
+ *
+ * Unlike findTransferCandidates/linkTransfers this is not a guess — the user
+ * named the counter account — so it works within one budget scope and with
+ * credit cards. The card case is the whole point: invoice deduction only
+ * recognises payments that are transfer legs into the card, so a card payment
+ * imported as a categorised row can never settle its billing window.
+ */
+const COUNTERPART_MAX_DAYS = 10;
+
+/**
+ * The row `tx` would pair with in `counterAccountId`, if it already exists:
+ * equal and opposite amount within a few days, not itself a transfer or a
+ * split, and not an arriving leg that carries a spending envelope (a refund).
+ * Nearest date wins, deterministically. Exposed so the import wizard can say
+ * up front whether marking a row as a transfer will LINK or MINT.
+ */
+export function findTransferCounterpart(
+  b: LoadedBudget,
+  tx: { id?: Ulid; accountId: Ulid; date: ISODate; amount: Cents },
+  counterAccountId: Ulid,
+): Transaction | undefined {
+  const incomeGroups = new Set(b.groups.filter((g) => g.kind === "income").map((g) => g.id));
+  const incomeCats = new Set(b.categories.filter((c) => incomeGroups.has(c.groupId)).map((c) => c.id));
+  const day = (iso: ISODate): number => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86_400_000);
+  return b.transactions
+    .filter(
+      (t) =>
+        t.id !== tx.id &&
+        t.accountId === counterAccountId &&
+        !t.transfer &&
+        !t.splits &&
+        t.amount === -tx.amount &&
+        Math.abs(day(t.date) - day(tx.date)) <= COUNTERPART_MAX_DAYS &&
+        !(t.amount > 0 && t.categoryId && !incomeCats.has(t.categoryId)),
+    )
+    .sort((x, y) => {
+      const gx = Math.abs(day(x.date) - day(tx.date));
+      const gy = Math.abs(day(y.date) - day(tx.date));
+      return gx !== gy ? gx - gy : x.id < y.id ? -1 : 1;
+    })[0];
+}
+
+export function convertToTransfer(
+  b: LoadedBudget,
+  txId: Ulid,
+  counterAccountId: Ulid,
+): { budget: LoadedBudget; counterpart: "linked" | "minted" | "unchanged" } {
+  const tx = b.transactions.find((t) => t.id === txId);
+  const counterName = b.accounts.find((a) => a.id === counterAccountId)?.name;
+  if (!tx || tx.transfer || tx.accountId === counterAccountId || !counterName) {
+    return { budget: b, counterpart: "unchanged" };
+  }
+  const thisName = b.accounts.find((a) => a.id === tx.accountId)?.name ?? "—";
+  const pairId = newId();
+  // The arriving leg's income category (if any) dissolves into the link; the
+  // outflow leg keeps its envelope — same rules as linkTransfers.
+  const asLeg = (t: Transaction, counter: Ulid, otherName: string): Transaction => ({
+    ...t,
+    payee: transferPayee(t.amount, otherName),
+    ...(t.amount > 0 ? { categoryId: undefined } : {}),
+    transfer: { counterAccountId: counter, pairId },
+  });
+
+  const existing = findTransferCounterpart(b, tx, counterAccountId);
+  const patched = new Map<Ulid, Transaction>();
+  patched.set(tx.id, asLeg(tx, counterAccountId, counterName));
+  if (existing) {
+    patched.set(existing.id, asLeg(existing, tx.accountId, thisName));
+    return {
+      budget: { ...b, transactions: b.transactions.map((t) => patched.get(t.id) ?? t) },
+      counterpart: "linked",
+    };
+  }
+  const minted: Transaction = {
+    id: newId(),
+    accountId: counterAccountId,
+    date: tx.date,
+    effectiveDate: tx.date,
+    payee: transferPayee(-tx.amount, thisName),
+    memo: tx.memo,
+    amount: -tx.amount as Cents,
+    cleared: "uncleared",
+    approved: tx.approved,
+    transfer: { counterAccountId: tx.accountId, pairId },
+  };
+  return {
+    budget: { ...b, transactions: [...b.transactions.map((t) => patched.get(t.id) ?? t), minted] },
+    counterpart: "minted",
+  };
+}
+
+/**
+ * Remember that this statement string, on this account, means a transfer to
+ * `counterAccountId` — so next month's row arrives already marked. One entry
+ * per (account, key); marking again with a different target replaces it.
+ */
+export function rememberTransferAlias(b: LoadedBudget, key: string, accountId: Ulid, counterAccountId: Ulid): LoadedBudget {
+  if (!key.trim() || accountId === counterAccountId) return b;
+  const rest = (b.transferAliases ?? []).filter((a) => !(a.accountId === accountId && a.key === key));
+  return { ...b, transferAliases: [...rest, { key, accountId, counterAccountId }] };
+}
+
+/** Forget a learned transfer meaning — the user filed the row as something else. */
+export function removeTransferAlias(b: LoadedBudget, key: string, accountId: Ulid): LoadedBudget {
+  const rest = (b.transferAliases ?? []).filter((a) => !(a.accountId === accountId && a.key === key));
+  return rest.length === (b.transferAliases ?? []).length ? b : { ...b, transferAliases: rest };
+}
+
+/**
+ * Should an incoming statement row be proposed as a transfer before the user
+ * says anything? Two sources, strongest first:
+ *  - a remembered transfer alias for this row's text on this account;
+ *  - the card-payment shape: money arriving on a credit card whose equal and
+ *    opposite twin already sits in exactly ONE other account. Twins in two
+ *    accounts propose nothing — a proposal must never guess.
+ */
+export function proposeImportTransfer(
+  b: LoadedBudget,
+  row: { key: string; accountId: Ulid; date: ISODate; amount: Cents },
+): Ulid | undefined {
+  const learned = row.key
+    ? (b.transferAliases ?? []).find((a) => a.accountId === row.accountId && a.key === row.key)
+    : undefined;
+  if (learned && b.accounts.some((a) => a.id === learned.counterAccountId)) return learned.counterAccountId;
+  const acct = b.accounts.find((a) => a.id === row.accountId);
+  if (acct?.type !== "creditCard" || row.amount <= 0) return undefined;
+  const hits = b.accounts.filter(
+    (a) => a.id !== row.accountId && !!findTransferCounterpart(b, { accountId: row.accountId, date: row.date, amount: row.amount }, a.id),
+  );
+  return hits.length === 1 ? hits[0]!.id : undefined;
+}
+
 /** Record money moving between two accounts: both legs, linked by a pair id. */
 export function addTransfer(b: LoadedBudget, args: TransferArgs): LoadedBudget {
   const nameOf = (id: Ulid): string => b.accounts.find((a) => a.id === id)?.name ?? "—";
@@ -610,6 +753,12 @@ export function syncPayees(b: LoadedBudget): { budget: LoadedBudget; added: numb
  * Renaming onto a name already in use MERGES the two — that is the documented
  * behaviour of the payees screen — so the surviving entry keeps both sets of
  * aliases. Anything a bank called either one still lands on the survivor.
+ *
+ * The rename itself is also worth learning: the OLD spelling demonstrably meant
+ * this payee, so its (noise-stripped) key becomes an alias on the survivor.
+ * That is what makes "commit the import quickly, tidy the names afterwards" a
+ * workflow that teaches — the next statement's identical string lands renamed
+ * without the wizard ever asking again.
  */
 export function renamePayee(b: LoadedBudget, from: string, to: string): LoadedBudget {
   const next = to.trim();
@@ -620,26 +769,42 @@ export function renamePayee(b: LoadedBudget, from: string, to: string): LoadedBu
   const source = payees.find((p) => payeeKey(p.name) === payeeKey(from));
   const target = payees.find((p) => payeeKey(p.name) === payeeKey(next) && p !== source);
   let nextPayees: Payee[];
+  let survivorId: Ulid | undefined;
   if (source && target) {
     const aliases = [...new Set([...target.aliases, ...source.aliases])];
     nextPayees = payees.filter((p) => p !== source).map((p) => (p === target ? { ...p, aliases } : p));
+    survivorId = target.id;
   } else if (source) {
     nextPayees = payees.map((p) => (p === source ? { ...p, name: next } : p));
+    survivorId = source.id;
   } else if (target) {
     nextPayees = payees;
+    survivorId = target.id;
   } else {
-    nextPayees = [...payees, { id: newId(), name: next, aliases: [] }];
+    const minted: Payee = { id: newId(), name: next, aliases: [] };
+    nextPayees = [...payees, minted];
+    survivorId = minted.id;
   }
-  return { ...b, transactions, payees: nextPayees };
+
+  const renamed: LoadedBudget = { ...b, transactions, payees: nextPayees };
+  const oldKey = technicalKey({ payee: from, memo: "" });
+  // A case-only or whitespace rename teaches nothing; anything else does.
+  if (oldKey && oldKey !== payeeKey(next)) return addPayeeAlias(renamed, survivorId, from);
+  return renamed;
 }
 
 /**
  * Record that a technical string means this payee. A key belongs to exactly one
  * payee, so it is taken off any other entry — otherwise the winner would depend
  * on list order.
+ *
+ * The alias is normalized here, at the single point of entry: whatever arrives
+ * (a raw bank string with a per-transaction id, a manual paste in the payees
+ * screen) is reduced to its stable stem, so every stored alias is one that can
+ * actually recur.
  */
 export function addPayeeAlias(b: LoadedBudget, payeeId: Ulid, alias: string): LoadedBudget {
-  const key = payeeKey(alias);
+  const key = technicalKey({ payee: alias, memo: "" });
   if (!key) return b;
   const payees = (b.payees ?? []).map((p) => {
     if (p.id === payeeId) return p.aliases.includes(key) ? p : { ...p, aliases: [...p.aliases, key] };

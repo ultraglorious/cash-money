@@ -8,6 +8,7 @@ import {
   MonthlyAssignmentSchema,
   PayeeSchema,
   TransactionSchema,
+  TransferAliasSchema,
 } from "../model/schema.js";
 import { RegisterFormatSchema } from "../import/format.js";
 import { byId, stableJson } from "./serialize.js";
@@ -65,6 +66,7 @@ const BudgetFileSchema = z.object({
   assignments: z.array(MonthlyAssignmentSchema),
   transactions: z.array(TransactionSchema),
   payees: z.array(PayeeSchema).default([]),
+  transferAliases: z.array(TransferAliasSchema).default([]),
   savedFormats: z.array(SavedFormatSchema).default([]),
   importSources: z.array(ImportSourceEntrySchema).default([]),
   skippedRows: z.array(SkippedRowSchema).default([]),
@@ -82,6 +84,7 @@ export function serializeBudgetFile(data: BudgetFileData, savedAt: string): stri
     assignments: byId(loaded.assignments),
     transactions: byId(loaded.transactions),
     payees: byId(loaded.payees ?? []),
+    transferAliases: [...(loaded.transferAliases ?? [])].sort((x, y) => (`${x.accountId}:${x.key}` < `${y.accountId}:${y.key}` ? -1 : 1)),
     savedFormats: data.savedFormats,
     importSources: data.importSources,
     skippedRows: data.skippedRows,
@@ -118,6 +121,7 @@ export function parseBudgetFile(text: string): BudgetFileData {
       assignments: f.assignments,
       transactions: f.transactions,
       payees: f.payees,
+      transferAliases: f.transferAliases,
     } as LoadedBudget,
     savedFormats: f.savedFormats as SavedFormat[],
     importSources: f.importSources as ImportSourceEntry[],

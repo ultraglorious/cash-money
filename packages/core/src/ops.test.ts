@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as ops from "./ops.js";
 import { fingerprint } from "./ids.js";
+import { nameIncomingRow } from "./import/payee.js";
 import { computeProjection } from "./engine/compute.js";
 import * as f from "../test/fixtures/factories.js";
 import type { Cents } from "./money.js";
@@ -529,6 +530,151 @@ describe("repeating transfers", () => {
   });
 });
 
+describe("making an imported row a transfer", () => {
+  const CARD = f.tid("ACRD");
+  function withCard(): LoadedBudget {
+    const b = base();
+    return { ...b, accounts: [...b.accounts, f.account({ id: CARD, name: "Card", type: "creditCard" })] };
+  }
+
+  it("links the existing opposite row instead of minting a second one", () => {
+    const b0 = withCard();
+    // The debit statement already delivered the outflow leg, filed plain.
+    const out = f.txn({ id: f.tid("TOUT"), accountId: CHK, date: "2026-02-10", amount: -49965 as Cents, payee: "BANK LINK" });
+    // The card statement now delivers the payment, also plain.
+    const inn = f.txn({ id: f.tid("TINN"), accountId: CARD, date: "2026-02-10", amount: 49965 as Cents, payee: "PAYMENT RECEIVED" });
+    const b = { ...b0, transactions: [...b0.transactions, out, inn] };
+
+    const { budget, counterpart } = ops.convertToTransfer(b, inn.id, CHK);
+    expect(counterpart).toBe("linked");
+    expect(budget.transactions).toHaveLength(b.transactions.length); // nothing minted
+
+    const legIn = budget.transactions.find((t) => t.id === inn.id)!;
+    const legOut = budget.transactions.find((t) => t.id === out.id)!;
+    expect(legIn.transfer?.counterAccountId).toBe(CHK);
+    expect(legOut.transfer?.counterAccountId).toBe(CARD);
+    expect(legIn.transfer?.pairId).toBe(legOut.transfer?.pairId);
+    expect(legIn.payee).toBe("Transfer from: Checking");
+    expect(legOut.payee).toBe("Transfer to: Card");
+    // Invoice deduction recognises payments as transfer legs INTO the card —
+    // this is the property the whole conversion exists for.
+    expect(legIn.transfer && legIn.amount > 0).toBe(true);
+  });
+
+  it("mints the missing leg, uncleared, when the counter account has nothing to link", () => {
+    const b0 = withCard();
+    const inn = f.txn({ id: f.tid("TIN2"), accountId: CARD, date: "2026-02-10", amount: 49965 as Cents, cleared: "cleared" });
+    const b = { ...b0, transactions: [...b0.transactions, inn] };
+
+    const { budget, counterpart } = ops.convertToTransfer(b, inn.id, CHK);
+    expect(counterpart).toBe("minted");
+    const minted = budget.transactions.find((t) => t.accountId === CHK && t.transfer);
+    expect(minted).toBeDefined();
+    expect(minted!.amount).toBe(-49965);
+    expect(minted!.date).toBe("2026-02-10");
+    // Its own statement hasn't confirmed it yet.
+    expect(minted!.cleared).toBe("uncleared");
+    expect(minted!.transfer!.pairId).toBe(budget.transactions.find((t) => t.id === inn.id)!.transfer!.pairId);
+  });
+
+  it("never links an arriving leg that spends an envelope — that's a refund, so a fresh leg is minted", () => {
+    const b0 = base();
+    const sav = f.account({ id: f.tid("ASAV"), name: "Savings", type: "checking" });
+    // Same size, same day, but categorised as spending: a refund, not an arrival.
+    const refund = f.txn({ id: f.tid("TREF"), accountId: sav.id, date: "2026-02-10", amount: 25000 as Cents, categoryId: GRO });
+    const out = f.txn({ id: f.tid("TOU2"), accountId: CHK, date: "2026-02-10", amount: -25000 as Cents });
+    const b = { ...b0, accounts: [...b0.accounts, sav], transactions: [...b0.transactions, refund, out] };
+
+    const { budget, counterpart } = ops.convertToTransfer(b, out.id, sav.id);
+    expect(counterpart).toBe("minted");
+    expect(budget.transactions.find((t) => t.id === refund.id)!.categoryId).toBe(GRO); // untouched
+    expect(budget.transactions.filter((t) => t.accountId === sav.id)).toHaveLength(2);
+  });
+
+  it("dissolves the arriving leg's income category into the link, and keeps the outflow's envelope", () => {
+    const b0 = base();
+    const sav = f.account({ id: f.tid("ASAV"), name: "Savings", type: "checking" });
+    const inn = f.txn({ id: f.tid("TIN3"), accountId: sav.id, date: "2026-02-11", amount: 25000 as Cents, categoryId: RTA });
+    const out = f.txn({ id: f.tid("TOU3"), accountId: CHK, date: "2026-02-10", amount: -25000 as Cents, categoryId: GRO });
+    const b = { ...b0, accounts: [...b0.accounts, sav], transactions: [...b0.transactions, inn, out] };
+
+    const { budget } = ops.convertToTransfer(b, out.id, sav.id);
+    expect(budget.transactions.find((t) => t.id === inn.id)!.categoryId).toBeUndefined();
+    expect(budget.transactions.find((t) => t.id === out.id)!.categoryId).toBe(GRO);
+  });
+
+  it("prefers the nearest-dated candidate, and refuses nonsense quietly", () => {
+    const b0 = base();
+    const sav = f.account({ id: f.tid("ASAV"), name: "Savings", type: "checking" });
+    const far = f.txn({ id: f.tid("TFAR"), accountId: sav.id, date: "2026-02-18", amount: 25000 as Cents, categoryId: undefined });
+    const near = f.txn({ id: f.tid("TNEA"), accountId: sav.id, date: "2026-02-11", amount: 25000 as Cents, categoryId: undefined });
+    const out = f.txn({ id: f.tid("TOU4"), accountId: CHK, date: "2026-02-10", amount: -25000 as Cents });
+    const b = { ...b0, accounts: [...b0.accounts, sav], transactions: [...b0.transactions, far, near, out] };
+
+    const linked = ops.convertToTransfer(b, out.id, sav.id);
+    expect(linked.budget.transactions.find((t) => t.id === near.id)!.transfer).toBeDefined();
+    expect(linked.budget.transactions.find((t) => t.id === far.id)!.transfer).toBeUndefined();
+
+    // Guards: unknown row, already a transfer, transfer to its own account.
+    expect(ops.convertToTransfer(b, f.tid("NOPE"), sav.id).counterpart).toBe("unchanged");
+    expect(ops.convertToTransfer(linked.budget, out.id, sav.id).counterpart).toBe("unchanged");
+    expect(ops.convertToTransfer(b, out.id, CHK).counterpart).toBe("unchanged");
+  });
+});
+
+describe("learned transfer meanings", () => {
+  const CARD = f.tid("ACRD");
+  const SAV = f.tid("ASAV");
+  function withAccounts(): LoadedBudget {
+    const b = base();
+    return {
+      ...b,
+      accounts: [
+        ...b.accounts,
+        f.account({ id: CARD, name: "Card", type: "creditCard" }),
+        f.account({ id: SAV, name: "Savings", type: "checking" }),
+      ],
+    };
+  }
+
+  it("remembering is one entry per (account, key), latest target wins; forgetting removes it", () => {
+    let b = ops.rememberTransferAlias(withAccounts(), "card payment", CARD, CHK);
+    b = ops.rememberTransferAlias(b, "card payment", CARD, SAV);
+    expect(b.transferAliases).toEqual([{ key: "card payment", accountId: CARD, counterAccountId: SAV }]);
+    expect(ops.rememberTransferAlias(b, "  ", CARD, CHK).transferAliases).toHaveLength(1); // blank key learns nothing
+    expect(ops.rememberTransferAlias(b, "x", CARD, CARD).transferAliases).toHaveLength(1); // self-transfer learns nothing
+    expect(ops.removeTransferAlias(b, "card payment", CARD).transferAliases).toEqual([]);
+  });
+
+  it("a learned alias proposes its transfer on any account, purchase-shaped or not", () => {
+    const b = ops.rememberTransferAlias(withAccounts(), "standing order", CHK, SAV);
+    const target = ops.proposeImportTransfer(b, { key: "standing order", accountId: CHK, date: "2026-02-10", amount: -25000 as Cents });
+    expect(target).toBe(SAV);
+    // Same key on a DIFFERENT account means nothing — the alias is per-account.
+    expect(ops.proposeImportTransfer(b, { key: "standing order", accountId: SAV, date: "2026-02-10", amount: -25000 as Cents })).toBeUndefined();
+  });
+
+  it("recognises the card-payment shape unprompted: incoming on a card, twin in exactly one account", () => {
+    const b0 = withAccounts();
+    const twin = f.txn({ id: f.tid("TTWN"), accountId: CHK, date: "2026-02-09", amount: -49965 as Cents, categoryId: undefined });
+    const b = { ...b0, transactions: [...b0.transactions, twin] };
+    const target = ops.proposeImportTransfer(b, { key: "payment received", accountId: CARD, date: "2026-02-10", amount: 49965 as Cents });
+    expect(target).toBe(CHK);
+    // An outgoing card row is a purchase, not a payment.
+    expect(ops.proposeImportTransfer(b, { key: "shop", accountId: CARD, date: "2026-02-10", amount: -49965 as Cents })).toBeUndefined();
+    // The same shape on a cash account is not proposed — only cards.
+    expect(ops.proposeImportTransfer(b, { key: "arrival", accountId: SAV, date: "2026-02-10", amount: 49965 as Cents })).toBeUndefined();
+  });
+
+  it("twins in two accounts propose nothing — a proposal must never guess", () => {
+    const b0 = withAccounts();
+    const t1 = f.txn({ id: f.tid("TTW1"), accountId: CHK, date: "2026-02-09", amount: -49965 as Cents, categoryId: undefined });
+    const t2 = f.txn({ id: f.tid("TTW2"), accountId: SAV, date: "2026-02-11", amount: -49965 as Cents, categoryId: undefined });
+    const b = { ...b0, transactions: [...b0.transactions, t1, t2] };
+    expect(ops.proposeImportTransfer(b, { key: "payment received", accountId: CARD, date: "2026-02-10", amount: 49965 as Cents })).toBeUndefined();
+  });
+});
+
 describe("the payee master list", () => {
   const withPayees = (): LoadedBudget => ({
     ...base(),
@@ -560,7 +706,9 @@ describe("the payee master list", () => {
 
     const renamed = b.payees!.find((p) => p.id === northwind.id)!;
     expect(renamed.name).toBe("AS Northwind Bank");
-    expect(renamed.aliases).toEqual(["as northwind bank"]); // still points here
+    // The recorded alias survives, and the OLD spelling joins it — the rename
+    // itself is evidence that "northwind" means this payee.
+    expect([...renamed.aliases].sort()).toEqual(["as northwind bank", "northwind"]);
     expect(b.transactions.find((t) => t.id === f.tid("PT1"))!.payee).toBe("AS Northwind Bank");
   });
 
@@ -574,8 +722,31 @@ describe("the payee master list", () => {
 
     expect(b.payees).toHaveLength(1);
     expect(b.payees![0]!.name).toBe("Greengrocer");
-    expect([...b.payees![0]!.aliases].sort()).toEqual(["as northwind bank", "greengrocer oü"]);
+    // Both recorded aliases survive the merge, plus the merged-away name itself.
+    expect([...b.payees![0]!.aliases].sort()).toEqual(["as northwind bank", "greengrocer oü", "northwind"]);
     expect(b.transactions.filter((t) => t.payee === "Greengrocer")).toHaveLength(2);
+  });
+
+  it("a rename teaches the import: the old bank spelling becomes a live alias", () => {
+    // The commit-fast-tidy-later workflow: a processor string was committed as
+    // the payee, then renamed onto the real one in the payees screen. The next
+    // statement's row — different per-transaction id, same stem — must land on
+    // the real payee via the alias, no wizard correction needed.
+    let b = ops.ensurePayee(base(), "Rideco").budget;
+    b = ops.ensurePayee(b, "RIDECO.EU/O/1234567890").budget;
+    b = ops.renamePayee(b, "RIDECO.EU/O/1234567890", "Rideco");
+
+    const rideco = b.payees!.find((p) => p.name === "Rideco")!;
+    expect(rideco.aliases).toEqual(["rideco.eu/o"]); // the stem, not the dead id
+
+    const next = nameIncomingRow({ payee: "RIDECO.EU/O/9999999999", memo: "" }, b.payees!, new Map());
+    expect(next).toMatchObject({ payee: "Rideco", from: "alias" });
+  });
+
+  it("a case-only rename records no self-alias", () => {
+    let b = ops.ensurePayee(base(), "rideco").budget;
+    b = ops.renamePayee(b, "rideco", "Rideco");
+    expect(b.payees!.find((p) => p.name === "Rideco")!.aliases).toEqual([]);
   });
 
   it("gives an alias to exactly one payee", () => {

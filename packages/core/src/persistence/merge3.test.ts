@@ -30,6 +30,17 @@ function file(transactions: Transaction[], over: Partial<BudgetFileData> = {}): 
 }
 
 describe("mergeBudgetFiles (three-way)", () => {
+  it("keeps transfer aliases learned on both machines", () => {
+    const CARD = f.tid("ACRD");
+    const alias = (key: string, counter: string) => ({ key, accountId: CARD, counterAccountId: f.tid(counter) });
+    const withAliases = (aliases: ReturnType<typeof alias>[]): BudgetFileData => {
+      const base = file([]);
+      return { ...base, loaded: { ...base.loaded, transferAliases: aliases } };
+    };
+    const { merged } = mergeBudgetFiles(file([]), withAliases([alias("card payment", "ACC1")]), withAliases([alias("top up", "ASAV")]));
+    expect((merged.loaded.transferAliases ?? []).map((a) => a.key).sort()).toEqual(["card payment", "top up"]);
+  });
+
   it("keeps additions from both sides", () => {
     const base = file([tx("T1")]);
     const ours = file([tx("T1"), tx("T2", { payee: "Local Add" })]);

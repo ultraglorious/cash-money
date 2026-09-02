@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  aliasEvidenceFromMatches,
   lastCategoryByPayee,
   matchExistingPayee,
   nameIncomingRow,
@@ -95,6 +96,20 @@ describe("matchExistingPayee", () => {
     expect(matchExistingPayee(technical, [a, b])?.name).toBe("Account interest");
   });
 
+  it("sees through Estonian case endings, which is how receipts actually arrive", () => {
+    const list = [payee("Verlan"), payee("Kesa")];
+    expect(matchExistingPayee("VESKI VERLANI ISETEENI", list)?.name).toBe("Verlan"); // genitive
+    expect(matchExistingPayee("OSTUKOHT KESAST", list)?.name).toBe("Kesa"); // elative
+    expect(matchExistingPayee("VESKI VERLAN", list)?.name).toBe("Verlan"); // and the plain form still works
+  });
+
+  it("a case ending is at most two letters, and only on a real stem", () => {
+    // Extending by three letters is a different word, not a declension.
+    expect(matchExistingPayee("VERLANISE FOODS", [payee("Verlan")])).toBeUndefined();
+    // A short payee never colonises words that merely start with it.
+    expect(matchExistingPayee("ERICSSON INVOICE", [payee("Eric")])).toBeUndefined();
+  });
+
   it("never matches on a scrap of a word, or on a token too short to mean anything", () => {
     expect(matchExistingPayee("RIDECOZZA LABS", list)).toBeUndefined();
     expect(matchExistingPayee("anything at all", [payee("AS")])).toBeUndefined();
@@ -154,6 +169,66 @@ describe("nameIncomingRow", () => {
   });
 });
 
+describe("aliasEvidenceFromMatches", () => {
+  const mk = (id: string, payee: string, transfer = false) =>
+    f.txn({
+      id: f.tid(id), accountId: CHK, date: "2026-01-10", amount: -1000 as Cents, categoryId: GRO, payee,
+      ...(transfer ? { categoryId: undefined, transfer: { counterAccountId: f.tid("AX"), pairId: f.tid("PX") } } : {}),
+    });
+  function budgetWith(txs: ReturnType<typeof mk>[], payees: Payee[] = []): LoadedBudget {
+    return {
+      budget: f.budget(),
+      accounts: [f.account({ id: CHK, name: "Checking", type: "checking" })],
+      groups: [f.group({ id: GEVD, name: "Everyday", kind: "normal" })],
+      categories: [f.category({ id: GRO, groupId: GEVD, name: "Groceries" })],
+      assignments: [],
+      transactions: txs,
+      payees,
+    };
+  }
+  const row = (payee: string, memo = "") => ({ payee, memo });
+
+  it("pairs the bank string with the curated payee of the transaction it settled", () => {
+    const b = budgetWith([mk("T1", "Verlan")]);
+    const { learn } = aliasEvidenceFromMatches(b, [
+      { txId: f.tid("T1"), kind: "exact", rows: [row("VESKI VERLANI ISETEENI")] },
+    ]);
+    expect([...learn.entries()]).toEqual([["veski verlani iseteeni", "Verlan"]]);
+  });
+
+  it("takes only unanimous evidence — a string matched to two payees teaches nothing", () => {
+    const b = budgetWith([mk("T1", "Verlan"), mk("T2", "Kesa")]);
+    const { learn, conflicted } = aliasEvidenceFromMatches(b, [
+      { txId: f.tid("T1"), kind: "exact", rows: [row("GENERIC CARD PAYMENT 1")] },
+      { txId: f.tid("T2"), kind: "exact", rows: [row("GENERIC CARD PAYMENT 1")] },
+    ]);
+    expect(learn.size).toBe(0);
+    expect(conflicted).toBe(1);
+  });
+
+  it("skips transfer legs, mixed-merchant combos, self-keys, and keys already on record", () => {
+    const b = budgetWith(
+      [mk("T1", "Transfer to: Savings", true), mk("T2", "Verlan"), mk("T3", "Verlan"), mk("T4", "Kesa")],
+      [{ id: f.tid("PK"), name: "Kesa", aliases: ["claimed key"] }],
+    );
+    const { learn } = aliasEvidenceFromMatches(b, [
+      { txId: f.tid("T1"), kind: "exact", rows: [row("STANDING ORDER")] }, // transfer leg
+      { txId: f.tid("T2"), kind: "combo", sameMerchant: false, rows: [row("A"), row("B")] }, // mixed combo
+      { txId: f.tid("T3"), kind: "exact", rows: [row("Verlan")] }, // self-key
+      { txId: f.tid("T4"), kind: "exact", rows: [row("CLAIMED KEY")] }, // user already decided
+    ]);
+    expect(learn.size).toBe(0);
+  });
+
+  it("keeps a single-merchant combo — several swipes, one shop, one lesson", () => {
+    const b = budgetWith([mk("T1", "Verlan")]);
+    const { learn } = aliasEvidenceFromMatches(b, [
+      { txId: f.tid("T1"), kind: "combo", sameMerchant: true, rows: [row("VERLANI POOD 1"), row("VERLANI POOD 1")] },
+    ]);
+    expect(learn.get("verlani pood 1")).toBe("Verlan");
+  });
+});
+
 describe("lastCategoryByPayee", () => {
   function budget(): LoadedBudget {
     return {
@@ -178,6 +253,22 @@ describe("lastCategoryByPayee", () => {
 
   it("takes the newest filing, since that is the current intent", () => {
     expect(lastCategoryByPayee(budget()).get("greengrocer")).toBe(DIN);
+  });
+
+  it("keeps households apart when asked, so imports never propose the other pool's envelope", () => {
+    const b = budget();
+    const GJNT = f.tid("GJNT");
+    const JGRO = f.tid("CJGR");
+    b.groups = [f.group({ id: GEVD, name: "Everyday", kind: "normal", household: "Personal" }), f.group({ id: GJNT, name: "Everyday", kind: "normal", household: "Joint" })];
+    b.categories = [...b.categories, f.category({ id: JGRO, groupId: GJNT, name: "Groceries" })];
+    b.transactions = [
+      ...b.transactions,
+      // The NEWEST filing overall is under the Joint household.
+      f.txn({ id: f.tid("TJ"), accountId: CHK, date: "2026-08-01", amount: -3000 as Cents, categoryId: JGRO, payee: "Greengrocer" }),
+    ];
+    expect(lastCategoryByPayee(b).get("greengrocer")).toBe(JGRO); // unscoped: newest wins
+    expect(lastCategoryByPayee(b, { household: "Personal" }).get("greengrocer")).toBe(DIN); // scoped: newest WITHIN the household
+    expect(lastCategoryByPayee(b, { household: "Joint" }).get("greengrocer")).toBe(JGRO);
   });
 
   it("ignores transfer legs, whose payee is derived text", () => {

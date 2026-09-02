@@ -39,9 +39,9 @@ describe("budget file (single-file container)", () => {
   it("round-trips the whole budget plus formats and sources", () => {
     const text = serializeBudgetFile(sample(), "2026-08-06T12:00:00Z");
     const back = parseBudgetFile(text);
-    // A budget written before payees existed comes back with an empty list
-    // rather than an absent one, so nothing downstream has to guard for it.
-    expect(back.loaded).toEqual({ ...sample().loaded, payees: [] });
+    // A budget written before payees or transfer aliases existed comes back
+    // with empty lists rather than absent ones, so nothing downstream guards.
+    expect(back.loaded).toEqual({ ...sample().loaded, payees: [], transferAliases: [] });
     expect(back.savedFormats).toEqual(sample().savedFormats);
     expect(back.importSources).toEqual(sample().importSources);
   });
@@ -56,6 +56,18 @@ describe("budget file (single-file container)", () => {
     };
     const back = parseBudgetFile(serializeBudgetFile(withPayees, "T"));
     expect(back.loaded.payees).toEqual(withPayees.loaded.payees);
+  });
+
+  it("round-trips the transfer aliases", () => {
+    const withAliases = {
+      ...sample(),
+      loaded: {
+        ...sample().loaded,
+        transferAliases: [{ key: "northwind bank", accountId: f.tid("ACC1"), counterAccountId: f.tid("ACC2") }],
+      },
+    };
+    const back = parseBudgetFile(serializeBudgetFile(withAliases, "T"));
+    expect(back.loaded.transferAliases).toEqual(withAliases.loaded.transferAliases);
   });
 
   it("is byte-stable: same data serializes identically", () => {

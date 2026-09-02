@@ -24,6 +24,7 @@ export * from "./import/format.js";
 export { builtinFormat, builtinFormats } from "./import/formats/index.js";
 export { guessFormat, type FormatGuess } from "./import/guess.js";
 export {
+  aliasEvidenceFromMatches,
   lastCategoryByPayee,
   matchExistingPayee,
   nameIncomingRow,

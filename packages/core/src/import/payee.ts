@@ -13,14 +13,16 @@ import { fold, trimN } from "./text.js";
  *
  * Three answers, in order of how much they can be trusted:
  *
- *   1. an ALIAS you recorded — exact, deterministic, and yours;
+ *   1. an ALIAS on record — exact, deterministic, and confirmed by you;
  *   2. a MATCH against your existing payees — strip the legal form, and if every
  *      word of one of your payees appears in the bank's string, that is almost
  *      certainly who it is ("AS Northwind Bank" → "Northwind");
  *   3. the DESCRIPTION, cleaned of account numbers, card masks and dates, which
  *      is all there is for a row the bank never named.
  *
- * Only (1) is stored, and only because you confirmed it. (2) and (3) propose.
+ * The matcher is a bootstrap, not the steady state: a correction, an accepted
+ * match, or a later payee rename all record an alias, so each merchant needs
+ * the heuristic at most once and graduates to exact lookup.
  */
 
 /** IBAN-shaped tokens, card masks, dates, times, and long digit runs. */
@@ -65,11 +67,14 @@ export function payeeFromDescription(description: string): string {
 
 /**
  * The key a row is remembered under: what the bank called it, else the shape of
- * its description. One function, so an alias recorded from a row still matches
- * the same row next month.
+ * its description — both run through the same noise-stripping, because a
+ * supplied name can carry a per-transaction id too ("RIDECO.EU/O/2607150000").
+ * Folding the raw name would store an alias that can never fire again; the
+ * stripped stem ("rideco.eu/o") recurs on every future ride. One function, so
+ * an alias recorded from a row still matches the same row next month.
  */
 export function technicalKey(row: { payee: string; memo: string }): string {
-  return fold(row.payee) || fold(payeeFromDescription(row.memo));
+  return fold(payeeFromDescription(row.payee)) || fold(payeeFromDescription(row.memo));
 }
 
 /** Legal forms and company suffixes, never part of what you call something. */
@@ -87,12 +92,34 @@ function tokens(s: string): Set<string> {
 }
 
 /**
+ * Estonian inflects the nouns on a receipt: the bank writes VERLANI (genitive)
+ * or KESAST (elative) where the payee is Verlan or Kesa. Case endings are
+ * short suffixes appended to the stem, so a payee token also matches a
+ * statement token that merely EXTENDS it by up to two characters — provided the
+ * stem itself is substantial (four letters), so a short payee can't colonise
+ * every word it happens to start.
+ */
+const MIN_STEM = 4;
+const MAX_CASE_SUFFIX = 2;
+
+function tokenMatches(payeeToken: string, statementTokens: ReadonlySet<string>): boolean {
+  if (statementTokens.has(payeeToken)) return true;
+  if (payeeToken.length < MIN_STEM) return false;
+  for (const st of statementTokens) {
+    if (st.length > payeeToken.length && st.length - payeeToken.length <= MAX_CASE_SUFFIX && st.startsWith(payeeToken)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * The payee whose every word appears in the bank's string — the most specific
  * one, so "Northwind Insurance" beats "Northwind" when both fit.
  *
- * Deliberately conservative: never a partial word, never a token under three
- * characters. A first-time merchant comes back undefined rather than wearing
- * someone else's name.
+ * Deliberately conservative: never more than a case ending beyond a whole
+ * word, never a token under three characters. A first-time merchant comes back
+ * undefined rather than wearing someone else's name.
  */
 export function matchExistingPayee(technical: string, payees: readonly Payee[]): Payee | undefined {
   const words = tokens(technical);
@@ -104,7 +131,7 @@ export function matchExistingPayee(technical: string, payees: readonly Payee[]):
     if (pw.size === 0) continue;
     let all = true;
     for (const w of pw) {
-      if (!words.has(w)) {
+      if (!tokenMatches(w, words)) {
         all = false;
         break;
       }
@@ -122,16 +149,85 @@ export function matchExistingPayee(technical: string, payees: readonly Payee[]):
   return best;
 }
 
-/** The category a payee was last filed under — derived, so it can't go stale. */
-export function lastCategoryByPayee(b: LoadedBudget): Map<string, Ulid> {
+/**
+ * The category a payee was last filed under — derived, so it can't go stale.
+ *
+ * Household-scoped when asked: a payee used by both households (every grocery
+ * store) keeps a separate answer per household, because proposing the Joint
+ * envelope for a Personal import would file one household's spending against
+ * the other's money — and the scoped picker couldn't even display it.
+ */
+export function lastCategoryByPayee(b: LoadedBudget, opts: { household?: string } = {}): Map<string, Ulid> {
+  const allowed =
+    opts.household === undefined
+      ? null
+      : new Set(
+          b.categories
+            .filter((c) => {
+              const g = b.groups.find((g) => g.id === c.groupId);
+              return g?.household === opts.household;
+            })
+            .map((c) => c.id),
+        );
   const out = new Map<string, Ulid>();
   const newestFirst = [...b.transactions].sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0));
   for (const t of newestFirst) {
     if (t.transfer || !t.categoryId) continue;
+    if (allowed && !allowed.has(t.categoryId)) continue;
     const key = fold(t.payee);
     if (key && !out.has(key)) out.set(key, t.categoryId);
   }
   return out;
+}
+
+/**
+ * The mapping history already proves.
+ *
+ * The reconciler pairs statement rows with budget rows by amount and date,
+ * independent of names — so every match says "this bank string and this curated
+ * payee are the same physical transaction". Nine years of renaming is sitting
+ * in those pairs, and harvesting them teaches mappings no heuristic could
+ * derive. Re-importing an old statement becomes a way to replay history: the
+ * matches absorb every row, nothing is added, and the aliases are banked.
+ *
+ * Guards, because history contains noise:
+ *  - transfer legs are skipped (their payee is derived text, not a name);
+ *  - combo matches count only when every statement row came from one merchant;
+ *  - a key is learned only when its evidence is UNANIMOUS — a generic string
+ *    matched to three different payees over the years teaches nothing safe;
+ *  - keys already recorded as an alias anywhere are left alone: an explicit
+ *    earlier decision outranks inference.
+ */
+export function aliasEvidenceFromMatches(
+  b: LoadedBudget,
+  matches: readonly { txId: Ulid; kind: string; sameMerchant?: boolean; rows: readonly { payee: string; memo: string }[] }[],
+): { learn: Map<string, string>; conflicted: number } {
+  const txById = new Map(b.transactions.map((t) => [t.id, t]));
+  const existing = new Set((b.payees ?? []).flatMap((p) => p.aliases));
+
+  const evidence = new Map<string, Map<string, string>>(); // key -> foldedName -> displayName
+  for (const m of matches) {
+    if (m.kind === "combo" && !m.sameMerchant) continue;
+    const t = txById.get(m.txId);
+    if (!t || t.transfer) continue;
+    const name = trimN(t.payee);
+    if (!name) continue;
+    for (const row of m.rows) {
+      const key = technicalKey(row);
+      if (!key || key === fold(name) || existing.has(key)) continue;
+      const names = evidence.get(key) ?? new Map<string, string>();
+      names.set(fold(name), name);
+      evidence.set(key, names);
+    }
+  }
+
+  const learn = new Map<string, string>();
+  let conflicted = 0;
+  for (const [key, names] of evidence) {
+    if (names.size === 1) learn.set(key, [...names.values()][0]!);
+    else conflicted++;
+  }
+  return { learn, conflicted };
 }
 
 export interface ProposedName {

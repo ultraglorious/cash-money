@@ -168,6 +168,13 @@ export function mergeBudgetFiles(
         report,
       ),
       payees: mergePayees(base.loaded.payees ?? [], ours.loaded.payees ?? [], theirs.loaded.payees ?? [], report),
+      transferAliases: mergeCollection(
+        base.loaded.transferAliases ?? [],
+        ours.loaded.transferAliases ?? [],
+        theirs.loaded.transferAliases ?? [],
+        (a) => `${a.accountId}:${a.key}`,
+        report,
+      ),
     },
     savedFormats: mergeCollection(base.savedFormats, ours.savedFormats, theirs.savedFormats, (f) => f.format.id, report),
     importSources: mergeCollection(base.importSources, ours.importSources, theirs.importSources, (s) => s.accountId, report),
