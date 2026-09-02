@@ -15,6 +15,7 @@ import {
   IconSelector,
   IconTags,
   IconTrash,
+  IconX,
 } from "@tabler/icons-react";
 import { newId, ops, type Cents, type Transaction, type Ulid } from "@cash-money/core";
 import { useApp } from "../../state";
@@ -158,6 +159,12 @@ export function TransactionsView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [budget, activeAccount],
   );
+  // The pill is the filter's only control and it disappears at zero — so the
+  // filter must not outlive it. Categorising the last row (or switching to a
+  // clean account) returns to the full list rather than an empty, stuck one.
+  useEffect(() => {
+    if (onlyUncategorized && uncategorizedCount === 0) setOnlyUncategorized(false);
+  }, [onlyUncategorized, uncategorizedCount]);
 
   // ---- Multi-select ----------------------------------------------------------
   const anchorRef = useRef<Ulid | null>(null);
@@ -296,12 +303,20 @@ export function TransactionsView() {
             </Tooltip>
           )}
           {uncategorizedCount > 0 && (
-            <Tooltip label={`${uncategorizedCount} outflow${uncategorizedCount === 1 ? "" : "s"} with no envelope — they come straight out of Ready to Assign. Click to see just those.`} withArrow>
+            <Tooltip
+              label={
+                onlyUncategorized
+                  ? "Showing only these rows — click to show everything again."
+                  : `${uncategorizedCount} outflow${uncategorizedCount === 1 ? "" : "s"} with no envelope — they come straight out of Ready to Assign. Click to see just those.`
+              }
+              withArrow
+            >
               <Badge
                 color="yellow"
                 variant={onlyUncategorized ? "filled" : "light"}
                 style={{ cursor: "pointer" }}
                 onClick={() => setOnlyUncategorized((v) => !v)}
+                rightSection={onlyUncategorized ? <IconX size={11} /> : undefined}
               >
                 {uncategorizedCount} need{uncategorizedCount === 1 ? "s" : ""} a category
               </Badge>
