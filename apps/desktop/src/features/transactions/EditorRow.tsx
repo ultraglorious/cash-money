@@ -159,12 +159,14 @@ export function EditorRow({
     // An existing transfer stays a transfer even while the text is mid-edit.
     if (!initial?.transfer) setTransferTo(null);
     if (!categoryTouched && !splits) {
-      // Only auto-fill a category this account's picker actually offers — the
+      // Only auto-fill a category this row's picker actually offers — the
       // payee's last filing may belong to the other household's envelope set.
+      // The picker includes the income categories, so a payee whose money
+      // arrives as Ready to Assign auto-fills like any other. A miss clears
+      // any earlier auto-fill instead of leaving the previous payee's category.
       const last = lastCategoryOf(value);
-      if (last && categoryDataFor(accountId as Ulid | null).some((g) => g.items.some((i) => i.value === last))) {
-        setCategoryId(last);
-      }
+      const offered = !!last && pickerData.some((g) => g.items.some((i) => i.value === last));
+      setCategoryId(offered && last ? last : null);
     }
   };
 
