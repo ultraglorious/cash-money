@@ -4,6 +4,7 @@ import {
   ActionIcon,
   Alert,
   Anchor,
+  Autocomplete,
   Badge,
   Button,
   Checkbox,
@@ -50,10 +51,12 @@ import {
   type SavedFormat,
   type SplitLine,
   type StagingResult,
+  type StatementRow,
   type StatementReconcile,
   type Transaction,
   type Ulid,
 } from "@cash-money/core";
+import { ops } from "@cash-money/core";
 import { useApp } from "../../state";
 import { LinkTransfersModal } from "../transactions/LinkTransfersModal";
 import { SplitEditorModal } from "../transactions/SplitEditorModal";
@@ -72,7 +75,7 @@ import {
 
 const IMPORT_LINK_NOTIFICATION = "import-link-transfers";
 const SPLIT_ROW = "__split__";
-const XFER_PREFIX = "__xfer__:";
+const TRANSFER_LABEL = "Transfer to/from: ";
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "src";
 const today = () => new Date().toISOString().slice(0, 10);
@@ -440,6 +443,11 @@ function StatementPane({ onDone }: { onDone: () => void }) {
         amount: row.amount,
         cleared: "uncleared" as const,
         approved: true,
+        // Invoice deduction only recognises a payment once it's a transfer leg,
+        // so a row marked as one must look like one in the preview too.
+        ...(edits.get(row.sourceRow)?.transferAccountId
+          ? { transfer: { counterAccountId: edits.get(row.sourceRow)!.transferAccountId!, pairId: `stmt-pair-${row.sourceRow}` as Ulid } }
+          : {}),
       }));
 
   // Invoice deduction preview: which card payment settles which billing
@@ -449,7 +457,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
     if (!result || !isCard || !accountId) return null;
     return deduceInvoiceCoverage([...app.budget.transactions, ...stagedRows(result, selected)], accountId as Ulid);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [result, selected, accountId, isCard, app.budget]);
+  }, [result, selected, edits, accountId, isCard, app.budget]);
   const settledCount = useMemo(() => {
     if (!coverage) return 0;
     const clearedOf = new Map(app.budget.transactions.map((t) => [t.id, t.cleared]));
@@ -490,9 +498,25 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       const seeded = new Map<number, RowEdit>();
       const named = new Map<number, ProposedName>();
       for (const row of r.toAdd) {
+        // A transfer proposal outranks any name or category: a remembered
+        // "this string means a transfer" alias, or the card-payment shape
+        // (money arriving on a card whose twin sits in exactly one account).
+        const xferTarget = ops.proposeImportTransfer(app.budget, {
+          key: technicalKey({ payee: row.payee, memo: row.memo }),
+          accountId: accId as Ulid,
+          date: row.date,
+          amount: row.amount,
+        });
+        // The name proposal is computed either way: clearing a proposed
+        // transfer must fall back to the proposed name, not the bank string.
         const proposal = nameIncomingRow({ payee: row.payee, memo: row.memo }, payees, categories);
         named.set(row.sourceRow, proposal);
-        if (proposal.payee !== row.payee || proposal.categoryId) {
+        if (xferTarget) {
+          seeded.set(row.sourceRow, {
+            transferAccountId: xferTarget,
+            ...(proposal.payee !== row.payee ? { payee: proposal.payee } : {}),
+          });
+        } else if (proposal.payee !== row.payee || proposal.categoryId) {
           seeded.set(row.sourceRow, {
             payee: proposal.payee,
             ...(proposal.categoryId ? { categoryId: proposal.categoryId } : {}),
@@ -638,10 +662,20 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       });
       app.addTransactions(added);
       // Rows marked as transfers become legs now that they exist in the budget:
-      // linked to the counterpart if it's already there, minted otherwise.
+      // linked to the counterpart if it's already there, minted otherwise. Each
+      // choice is remembered per (account, bank string) so next month's row
+      // arrives already marked; filing an alias's row as something else instead
+      // is the correction that unlearns it.
       added.forEach((tx, i) => {
-        const target = edits.get(rows[i]!.sourceRow)?.transferAccountId;
-        if (target) app.convertToTransfer(tx.id, target);
+        const row = rows[i]!;
+        const target = edits.get(row.sourceRow)?.transferAccountId;
+        const key = technicalKey({ payee: row.payee, memo: row.memo });
+        if (target) {
+          app.convertToTransfer(tx.id, target);
+          if (key) app.rememberTransferAlias(key, accId, target);
+        } else if (key && (app.budget.transferAliases ?? []).some((x) => x.accountId === accId && x.key === key)) {
+          app.removeTransferAlias(key, accId);
+        }
       });
     }
 
@@ -682,9 +716,17 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       app.reconcileAccount(accId, isCard ? [] : result.matches.map((m) => m.txId), result.check.to);
     }
     if (isCard && coverageOn) {
-      const cov = deduceInvoiceCoverage([...app.budget.transactions, ...added], accId);
+      // Coverage must see the transfer conversions dispatched above — a payment
+      // only counts once it's a transfer leg — so replay the same pure ops on a
+      // local copy rather than reading the (stale) budget in this closure.
+      let sim = { ...app.budget, transactions: [...app.budget.transactions, ...added] };
+      added.forEach((tx, i) => {
+        const target = edits.get(rows[i]!.sourceRow)?.transferAccountId;
+        if (target) sim = ops.convertToTransfer(sim, tx.id, target).budget;
+      });
+      const cov = deduceInvoiceCoverage(sim.transactions, accId);
       if (cov) {
-        const clearedOf = new Map(app.budget.transactions.map((t) => [t.id, t.cleared]));
+        const clearedOf = new Map(sim.transactions.map((t) => [t.id, t.cleared]));
         const newly = cov.covered.filter((id) => clearedOf.get(id) !== "reconciled");
         if (newly.length > 0) app.setClearedStatus(newly, "reconciled");
       }
@@ -729,9 +771,13 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   // Accounts a row can be a transfer to/from — a card payment, a top-up
   // between own accounts. Everything except the account being imported.
   const transferTargets = useMemo(
-    () => app.budget.accounts.filter((a) => a.id !== accountId && !a.closed).map((a) => ({ value: XFER_PREFIX + a.id, label: a.name })),
+    () => app.budget.accounts.filter((a) => a.id !== accountId && !a.closed).map((a) => ({ value: a.id, label: a.name })),
     [app.budget.accounts, accountId],
   );
+  // Whether marking a row as a transfer will LINK the row the counter account
+  // already holds or MINT the missing leg — shown up front, not decided silently.
+  const counterpartFor = (row: StatementRow, target: Ulid) =>
+    ops.findTransferCounterpart(app.budget, { accountId: accountId as Ulid, date: row.date, amount: row.amount }, target);
   // The newest transaction already in the account — the user's own heuristic
   // for "everything after this date is new; anything on or before it deserves
   // a second look before adding".
@@ -807,6 +853,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
           result={result}
           latestRecorded={latestRecorded}
           transferTargets={transferTargets}
+          counterpartFor={counterpartFor}
           currency={app.currency}
           accountName={accountId ? app.accountName(accountId as Ulid) : ""}
           categoryData={categoryData}
@@ -830,7 +877,7 @@ function StatementPane({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ReconcileView({ result, currency, accountName, accountId, latestRecorded, transferTargets, categoryData, unclaimed, selected, setSelected, edits, setEdits, proposed, previouslySkipped, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
+function ReconcileView({ result, currency, accountName, accountId, latestRecorded, transferTargets, counterpartFor, categoryData, unclaimed, selected, setSelected, edits, setEdits, proposed, previouslySkipped, isCard, coverage, settledCount, coverageOn, setCoverageOn, onCommit }: {
   result: StatementReconcile;
   currency: CurrencyConfig;
   accountName: string;
@@ -843,8 +890,10 @@ function ReconcileView({ result, currency, accountName, accountId, latestRecorde
   accountId: Ulid | null;
   /** Date of the newest transaction already recorded in this account, if any. */
   latestRecorded: string | null;
-  /** "Transfer to/from" choices offered in the category cell — every account but the one being imported. */
+  /** "Transfer to/from" choices offered in the payee field — every account but the one being imported. */
   transferTargets: Array<{ value: string; label: string }>;
+  /** The existing row a transfer would link to, if the counter account already holds it. */
+  counterpartFor: (row: StatementRow, target: Ulid) => Transaction | undefined;
   /** How each to-add row got its proposed name, keyed by sourceRow. */
   proposed: Map<number, ProposedName>;
   /** Rows you left unticked last time — unticked again, and said so. */
@@ -908,7 +957,7 @@ function ReconcileView({ result, currency, accountName, accountId, latestRecorde
     next.set(row, { ...next.get(row), transferAccountId, categoryId: undefined, splits: undefined });
     setEdits(next);
   };
-  const targetName = (id: Ulid) => transferTargets.find((t) => t.value === XFER_PREFIX + id)?.label ?? "—";
+  const targetName = (id: Ulid) => transferTargets.find((t) => t.value === id)?.label ?? "—";
   const [splitting, setSplitting] = useState<number | null>(null);
   const splittingRow = splitting === null ? null : (result.toAdd.find((r) => r.sourceRow === splitting) ?? null);
   const siblingCount = (row: number): number => {
@@ -1012,14 +1061,32 @@ function ReconcileView({ result, currency, accountName, accountId, latestRecorde
                   </Table.Td>
                   <Table.Td>
                     <Group gap={4} wrap="nowrap">
-                      <TextInput
+                      {edits.get(r.sourceRow)?.transferAccountId ? (
+                        <>
+                          <Text size="sm" c="blue" style={{ flex: 1 }}>
+                            {r.amount < 0 ? "Transfer to: " : "Transfer from: "}
+                            {targetName(edits.get(r.sourceRow)!.transferAccountId!)}
+                          </Text>
+                          <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => editTransfer(r.sourceRow, undefined)} aria-label="Clear transfer">
+                            <IconX size={13} />
+                          </ActionIcon>
+                        </>
+                      ) : (
+                      <Autocomplete
                         size="xs"
+                        data={[{ group: "Transfer to/from", items: transferTargets.map((t) => TRANSFER_LABEL + t.label) }]}
                         value={edits.get(r.sourceRow)?.payee ?? r.payee}
-                        onChange={(e) => edit(r.sourceRow, { payee: e.currentTarget.value })}
+                        onChange={(v) => {
+                          const target = transferTargets.find((t) => TRANSFER_LABEL + t.label === v);
+                          if (target) editTransfer(r.sourceRow, target.value as Ulid);
+                          else edit(r.sourceRow, { payee: v });
+                        }}
                         disabled={!selected.has(r.sourceRow)}
                         style={{ flex: 1 }}
+                        comboboxProps={{ withinPortal: true }}
                       />
-                      {(() => {
+                      )}
+                      {!edits.get(r.sourceRow)?.transferAccountId && (() => {
                         const from = proposed.get(r.sourceRow)?.from;
                         const n = siblingCount(r.sourceRow);
                         return (
@@ -1050,27 +1117,32 @@ function ReconcileView({ result, currency, accountName, accountId, latestRecorde
                         </ActionIcon>
                       </Group>
                     ) : edits.get(r.sourceRow)?.transferAccountId ? (
-                      <Group gap={4} wrap="nowrap">
-                        <Tooltip label="Lands as a transfer: linked to the matching row if that account already has it, otherwise the other leg is created (uncleared) for its own statement to confirm." withArrow multiline w={280}>
-                          <Badge color="blue" variant="light">Transfer: {targetName(edits.get(r.sourceRow)!.transferAccountId!)}</Badge>
-                        </Tooltip>
-                        <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => editTransfer(r.sourceRow, undefined)} aria-label="Clear transfer">
-                          <IconX size={13} />
-                        </ActionIcon>
-                      </Group>
+                      (() => {
+                        const target = edits.get(r.sourceRow)!.transferAccountId!;
+                        const existing = counterpartFor(r, target);
+                        return (
+                          <Tooltip
+                            label={
+                              existing
+                                ? `Links to the row already in ${targetName(target)} (${existing.date}) — nothing new is created.`
+                                : `The other leg will be created in ${targetName(target)}, uncleared, for its own statement to confirm.`
+                            }
+                            withArrow
+                            multiline
+                            w={280}
+                          >
+                            <Badge color="blue" variant="light">{existing ? "links existing row" : "adds the other leg"}</Badge>
+                          </Tooltip>
+                        );
+                      })()
                     ) : (
                       <Select
                         size="xs"
                         placeholder="Category"
-                        data={[
-                          { value: SPLIT_ROW, label: "⑂ Split between categories…" },
-                          { group: "Transfer to/from", items: transferTargets },
-                          ...categoryData,
-                        ]}
+                        data={[{ value: SPLIT_ROW, label: "⑂ Split between categories…" }, ...categoryData]}
                         value={edits.get(r.sourceRow)?.categoryId ?? null}
                         onChange={(v) => {
                           if (v === SPLIT_ROW) setSplitting(r.sourceRow);
-                          else if (v?.startsWith(XFER_PREFIX)) editTransfer(r.sourceRow, v.slice(XFER_PREFIX.length) as Ulid);
                           else edit(r.sourceRow, { categoryId: v });
                         }}
                         searchable

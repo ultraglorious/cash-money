@@ -231,6 +231,20 @@ to undo rather than something buried in history. The three-way merge unions
 alias lists rather than picking a winner — an alias learned on the laptop and
 another learned on the desktop are both true.
 
+Some recurring rows are not purchases at all. A **transfer alias**
+(`TransferAlias`: key, accountId, counterAccountId) records that a statement
+string on one account means a transfer — the canonical case being the monthly
+card payment, which invoice deduction only recognises once it is a transfer leg
+into the card. Marking a row as a transfer in the wizard teaches one; filing
+that string's next row as something else unlearns it. First-timers are also
+recognised by shape: money arriving on a credit card whose equal-and-opposite
+twin already sits in exactly one other account is proposed as a transfer
+unprompted (`ops.proposeImportTransfer`); twins in two accounts propose
+nothing, because a proposal must never guess. On commit,
+`ops.convertToTransfer` links the existing counterpart when the budget already
+holds it and mints the missing leg (uncleared) when it doesn't — the wizard
+says which of the two will happen before you commit.
+
 ## The import pipeline (`packages/core/src/import/`)
 
 Imports are **format-driven**: nothing about any particular app's CSV shape is

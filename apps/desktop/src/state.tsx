@@ -121,6 +121,10 @@ interface Actions {
   renamePayee: (from: string, to: string) => void;
   /** Record that a bank's technical string means this payee (minting it if new). */
   rememberPayeeAlias: (name: string, alias: string) => void;
+  /** Remember that a statement string on an account means a transfer to `counterAccountId`. */
+  rememberTransferAlias: (key: string, accountId: Ulid, counterAccountId: Ulid) => void;
+  /** Forget a learned transfer meaning — the user filed the row as something else. */
+  removeTransferAlias: (key: string, accountId: Ulid) => void;
   removePayeeAlias: (payeeId: Ulid, alias: string) => void;
   deletePayee: (payeeId: Ulid) => void;
   /** Link imported rows that were always two halves of one transfer. */
@@ -592,6 +596,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setClearedStatus: (ids, cleared) => apply((b) => ops.setClearedStatus(b, ids, cleared)),
       renamePayee: (from, to) => apply((b) => ops.renamePayee(b, from, to)),
       rememberPayeeAlias: (name, alias) => apply((b) => ops.rememberPayeeAlias(b, name, alias)),
+      rememberTransferAlias: (key, accountId, counterAccountId) => apply((b) => ops.rememberTransferAlias(b, key, accountId, counterAccountId)),
+      removeTransferAlias: (key, accountId) => apply((b) => ops.removeTransferAlias(b, key, accountId)),
       removePayeeAlias: (payeeId, alias) => apply((b) => ops.removePayeeAlias(b, payeeId, alias)),
       deletePayee: (payeeId) => apply((b) => ops.deletePayee(b, payeeId)),
       linkTransfers: (pairs) => {
