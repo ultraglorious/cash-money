@@ -831,10 +831,11 @@ function ReconcileView({ result, currency, accountName, accountId, categoryData,
     next.has(row) ? next.delete(row) : next.add(row);
     setSelected(next);
   };
-  // Rows sharing a technical key are the same merchant, so a decision about
-  // one is a decision about all of them: five rows from one shop take one
-  // typed name, not five. The count is shown beside the field, so the reach
-  // of an edit is never a surprise.
+  // Rows sharing a technical key are the same merchant, so the NAME typed on
+  // one covers all of them: five rows from one shop take one typed name, not
+  // five. The category is a different kind of statement — it's about the
+  // individual purchase, not the merchant (the landlord takes rent on one row
+  // and utilities on the next) — so category picks stay strictly per-row.
   const keyOfRow = useMemo(
     () => new Map(result.toAdd.map((r) => [r.sourceRow, technicalKey({ payee: r.payee, memo: r.memo })])),
     [result.toAdd],
@@ -849,11 +850,11 @@ function ReconcileView({ result, currency, accountName, accountId, categoryData,
     return byKey;
   }, [result.toAdd, keyOfRow]);
   const edit = (row: number, patch: RowEdit) => {
-    const key = keyOfRow.get(row);
+    const key = "payee" in patch ? keyOfRow.get(row) : undefined;
     const targets = key ? (rowsSharingKey.get(key) ?? [row]) : [row];
     const next = new Map(edits);
-    // Picking a category is a statement about the merchant, so it clears any
-    // split on the rows it reaches — the two are mutually exclusive.
+    // A category and a split are mutually exclusive statements about a row,
+    // so picking a category clears any split on it.
     const clear = "categoryId" in patch ? { splits: undefined } : {};
     for (const r of targets) next.set(r, { ...next.get(r), ...patch, ...clear });
     setEdits(next);
@@ -973,7 +974,7 @@ function ReconcileView({ result, currency, accountName, accountId, categoryData,
                               </Tooltip>
                             )}
                             {n > 1 && (
-                              <Tooltip label={`Same merchant string on ${n} rows — edits here apply to all of them.`} withArrow>
+                              <Tooltip label={`Same merchant string on ${n} rows — the name typed here applies to all of them. Categories stay per-row.`} withArrow>
                                 <Badge size="xs" color="gray" variant="light">×{n}</Badge>
                               </Tooltip>
                             )}
