@@ -1,6 +1,6 @@
 [package]
 name = "cash-money"
-version = "1.0.0"
+version = "1.1.0"
 description = "A local, cross-platform envelope-budgeting app"
 authors = ["cash-money"]
 license = "MIT"
