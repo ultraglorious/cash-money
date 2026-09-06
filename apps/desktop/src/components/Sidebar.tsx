@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { ActionIcon, Badge, Button, Group, NavLink, ScrollArea, Stack, Text, ThemeIcon, Tooltip } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
@@ -25,6 +26,7 @@ import {
 } from "@tabler/icons-react";
 import type { Account, Ulid } from "@cash-money/core";
 import { useApp } from "../state";
+import { isTauri } from "../platform/tauriFs";
 import { money } from "../format";
 import { amountColor, householdColor } from "../theme";
 import { AddAccountModal } from "./AddAccountModal";
@@ -47,6 +49,15 @@ export function Sidebar() {
   const [manageOpen, manageModal] = useDisclosure(false);
   const [fileOpen, fileModal] = useDisclosure(false);
   const [linkOpen, linkModal] = useDisclosure(false);
+  // Which build is running — the first question of every "is it updated yet?".
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isTauri()) return;
+    void import("@tauri-apps/api/app")
+      .then(({ getVersion }) => getVersion())
+      .then(setAppVersion)
+      .catch(() => undefined);
+  }, []);
   const balances = projection.accountBalances();
   const households = projection.households;
   const balOf = (id: Ulid) => balances.get(id) ?? 0;
@@ -119,6 +130,11 @@ export function Sidebar() {
         <Button variant="subtle" color="gray" size="xs" fullWidth justify="flex-start" leftSection={<IconCloud size={15} />} onClick={fileModal.open}>
           Budget file…
         </Button>
+        {appVersion && (
+          <Text size="xs" c="dimmed" px="sm" pt={4}>
+            v{appVersion}
+          </Text>
+        )}
       </Stack>
 
       <AddAccountModal opened={addOpen} onClose={addModal.close} />

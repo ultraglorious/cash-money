@@ -38,6 +38,7 @@ import {
   writeBudgetFile,
 } from "./platform/tauriFs";
 import { newEmptyBudget } from "./platform/newBudget";
+import { checkForUpdate } from "./updater";
 
 export type View =
   | { kind: "plan" }
@@ -249,6 +250,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
     return saveChainRef.current;
   };
+
+  // One update check per session, after a budget actually loaded — an update
+  // notification over the setup screen would be noise. The check itself is
+  // read-only; saves are flushed by install(), before the installer exits the
+  // app out from under them.
+  const updateCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!isTauri() || !filePath || updateCheckedRef.current) return;
+    updateCheckedRef.current = true;
+    void checkForUpdate().then((update) => {
+      if (!update) return;
+      const UPDATE_ID = "app-update";
+      notifications.show({
+        id: UPDATE_ID,
+        color: "blue",
+        autoClose: false,
+        title: `Update available: v${update.version}`,
+        message: (
+          <Group gap="xs" align="center">
+            <Text size="sm">Your budget is saved first, then the app restarts updated.</Text>
+            <Button
+              size="compact-xs"
+              variant="light"
+              onClick={() => {
+                notifications.update({ id: UPDATE_ID, loading: true, withCloseButton: false, title: `Updating to v${update.version}…`, message: <Text size="sm">Downloading — the app will restart by itself.</Text> });
+                update.install(() => flushPendingRef.current()).catch(() => {
+                  notifications.update({ id: UPDATE_ID, loading: false, color: "red", autoClose: 8000, title: "Update failed", message: <Text size="sm">Nothing was changed. It will be offered again next launch.</Text> });
+                });
+              }}
+            >
+              Restart & update
+            </Button>
+          </Group>
+        ),
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filePath]);
 
   /** Adopt freshly-read file contents as the app's state. */
   const adoptRef = useRef<(path: string, contents: string, mtimeMs: number) => void>(() => {});
@@ -733,6 +772,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
             >
               Locate budget file…
             </Button>
+            {isTauri() && (
+              <Button
+                size="xs"
+                variant="light"
+                onClick={() => {
+                  void checkForUpdate().then((update) => {
+                    if (!update) {
+                      notifications.show({ color: "gray", title: "No update available", message: "This is already the newest released version." });
+                      return;
+                    }
+                    // Nothing is loaded on this screen, so there is nothing to flush.
+                    update.install(() => Promise.resolve()).catch((e) => setLoadError(String(e)));
+                  });
+                }}
+              >
+                Check for updates…
+              </Button>
+            )}
           </Group>
         </Alert>
       </Center>
