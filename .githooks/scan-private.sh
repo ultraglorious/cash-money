@@ -41,7 +41,11 @@ subject="$1"   # "staged" or a path to a commit message
 if [ "$subject" = "staged" ]; then
   # The scanner's own source necessarily contains the patterns it hunts for,
   # so it is excluded — otherwise editing this file trips it every time.
-  content=$(git diff --cached -U0 --no-color -- . ':(exclude).githooks/*' | grep '^+' | grep -v '^+++' || true)
+  # Lockfiles are excluded too: their integrity checksums are long random
+  # base64 in which the account-shape rules (matched case-insensitively)
+  # regularly find false IBANs, and nothing in them is hand-written — every
+  # line is derived from public npm packages.
+  content=$(git diff --cached -U0 --no-color -- . ':(exclude).githooks/*' ':(exclude)package-lock.json' ':(exclude)**/package-lock.json' | grep '^+' | grep -v '^+++' || true)
   where="staged changes"
 else
   content=$(cat "$subject")
