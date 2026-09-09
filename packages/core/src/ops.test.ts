@@ -326,6 +326,47 @@ describe("transaction ops", () => {
     expect(again.budget).toBe(b); // untouched object when nothing changes
   });
 
+  it("pruneOrphanedTransferPayees drops a stranded transfer-shaped master entry but keeps real ones", () => {
+    const withStray = {
+      ...base(),
+      payees: [
+        { id: f.tid("PSTRAY"), name: "Transfer to/from: Savings", aliases: [] },
+        { id: f.tid("PREAL"), name: "Northwind", aliases: [] },
+      ],
+      transactions: [
+        ...base().transactions,
+        f.txn({
+          id: f.tid("PT1"), accountId: CHK, date: "2026-01-05", amount: -500 as Cents, categoryId: undefined,
+          payee: "Transfer to: Savings", transfer: { counterAccountId: f.tid("ASAV"), pairId: f.tid("PP1") },
+        }),
+      ],
+    };
+    const { budget: b, removed } = ops.pruneOrphanedTransferPayees(withStray);
+    expect(removed).toBe(1);
+    expect(b.payees!.map((p) => p.name).sort()).toEqual(["Northwind"]);
+
+    const again = ops.pruneOrphanedTransferPayees(b);
+    expect(again.removed).toBe(0);
+    expect(again.budget).toBe(b); // untouched object when nothing changes
+  });
+
+  it("pruneOrphanedTransferPayees keeps a transfer-shaped entry a live transaction actually uses", () => {
+    const withLiveLeg = {
+      ...base(),
+      payees: [{ id: f.tid("PLIVE"), name: "Transfer to: Savings", aliases: [] }],
+      transactions: [
+        ...base().transactions,
+        f.txn({
+          id: f.tid("PT2"), accountId: CHK, date: "2026-01-05", amount: -500 as Cents, categoryId: undefined,
+          payee: "Transfer to: Savings", transfer: { counterAccountId: f.tid("ASAV"), pairId: f.tid("PP2") },
+        }),
+      ],
+    };
+    const { budget: b, removed } = ops.pruneOrphanedTransferPayees(withLiveLeg);
+    expect(removed).toBe(0);
+    expect(b).toBe(withLiveLeg);
+  });
+
   it("deleting or approving one transfer leg takes both", () => {
     const SAV = f.tid("ASAV");
     const withSavings = { ...base(), accounts: [...base().accounts, f.account({ id: SAV, name: "Savings", type: "checking" })] };

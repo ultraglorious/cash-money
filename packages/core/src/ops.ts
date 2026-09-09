@@ -297,6 +297,17 @@ function transferPayee(amount: number, counterName: string): string {
 }
 
 /**
+ * True for the derived transfer-payee text `transferPayee` produces, and for
+ * the "Transfer to/from: <account>" text the transfer pickers in the UI offer
+ * (which shows up as a stray master-payee entry if it was ever typed before a
+ * matching account existed). Payee lists meant for free-text payees, not
+ * transfer legs, should exclude anything this returns true for.
+ */
+export function isTransferPayeeText(payee: string): boolean {
+  return payee.startsWith("Transfer to: ") || payee.startsWith("Transfer from: ") || payee.startsWith("Transfer to/from: ");
+}
+
+/**
  * Rewrite every transfer leg's payee to the canonical direction-aware text —
  * imported transfers carry whatever the source export called them. Idempotent
  * and cosmetic only: pairing and import identities are untouched (identity is
@@ -745,6 +756,24 @@ export function syncPayees(b: LoadedBudget): { budget: LoadedBudget; added: numb
   }
   if (minted.length === 0) return { budget: b, added: 0 };
   return { budget: { ...b, payees: [...(b.payees ?? []), ...minted] }, added: minted.length };
+}
+
+/**
+ * One-time cleanup: drop master-list payees that read as derived transfer
+ * text (see `isTransferPayeeText`) and that no surviving transaction actually
+ * uses. `syncPayees` never removes anything it minted, so a payee that briefly
+ * carried transfer-shaped text — before an in-progress transfer's real payee
+ * overwrote it — could be minted from that instant and then linger forever
+ * once the transaction itself moved on. Idempotent — 0 removals on every
+ * later load. Never touches a payee still referenced by a transaction, even
+ * a transfer leg, since that means the text belongs there.
+ */
+export function pruneOrphanedTransferPayees(b: LoadedBudget): { budget: LoadedBudget; removed: number } {
+  const inUse = new Set(b.transactions.map((t) => payeeKey(t.payee)));
+  const payees = b.payees ?? [];
+  const kept = payees.filter((p) => !isTransferPayeeText(p.name) || inUse.has(payeeKey(p.name)));
+  if (kept.length === payees.length) return { budget: b, removed: 0 };
+  return { budget: { ...b, payees: kept }, removed: payees.length - kept.length };
 }
 
 /**

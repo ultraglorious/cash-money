@@ -77,7 +77,7 @@ export function TransactionsView() {
   // The master list already holds every payee spelling (ops.syncPayees runs on
   // load), so there's no need to walk thousands of transactions for it.
   const payees = useMemo(
-    () => (budget.payees ?? []).map((p) => p.name).filter((p) => p.trim() && !p.startsWith("Transfer :")).sort(),
+    () => (budget.payees ?? []).map((p) => p.name).filter((p) => p.trim() && !ops.isTransferPayeeText(p)).sort(),
     [budget],
   );
   const lastCatByPayee = useMemo(() => {
