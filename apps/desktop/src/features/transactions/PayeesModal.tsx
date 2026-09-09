@@ -1,7 +1,7 @@
 import { memo, useMemo, useState } from "react";
 import { ActionIcon, Badge, Box, Group, Modal, Pill, ScrollArea, Stack, Text, TextInput, Tooltip } from "@mantine/core";
 import { IconCheck, IconPencil, IconPlus, IconSearch, IconX } from "@tabler/icons-react";
-import type { Payee } from "@cash-money/core";
+import { ops, type Payee } from "@cash-money/core";
 import { useActions, useBudgetState } from "../../state";
 
 /**
@@ -26,7 +26,7 @@ export function PayeesModal({ opened, onClose }: { opened: boolean; onClose: () 
     const counts = new Map<string, number>();
     for (const t of budget.transactions) {
       const p = t.payee.trim();
-      if (!p || t.transfer || p.startsWith("Transfer :")) continue;
+      if (!p || t.transfer || ops.isTransferPayeeText(p)) continue;
       counts.set(p.toLowerCase(), (counts.get(p.toLowerCase()) ?? 0) + 1);
     }
     return [...(budget.payees ?? [])]

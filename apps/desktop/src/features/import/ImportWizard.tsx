@@ -647,7 +647,11 @@ function StatementPane({ onDone }: { onDone: () => void }) {
       const built = buildStatementTransactions(rows, { sourceKey, accountId: accId, currency: app.currency }, isCard ? "uncleared" : "reconciled");
       added = built.map((tx, i) => {
         const e = edits.get(rows[i]!.sourceRow);
-        const payee = e?.payee?.trim();
+        // A transfer row's payee is always the derived text convertToTransfer
+        // assigns below — a name typed/proposed before the transfer was picked
+        // (kept around only as the fallback for if it gets un-picked) must
+        // never land in the budget, even for the instant before that call runs.
+        const payee = e?.transferAccountId ? undefined : e?.payee?.trim();
         return {
           ...tx,
           ...(payee ? { payee } : {}),

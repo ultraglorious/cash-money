@@ -300,8 +300,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // so the aliases that map a bank's naming onto yours have something to hang
     // off. Also idempotent: 0 additions on every later load.
     const synced = ops.syncPayees(normalized.budget);
-    const loaded = synced.budget;
-    const changed = normalized.changed + synced.added;
+    // One-time cleanup: drop master-list payees stranded by a since-fixed bug
+    // that could briefly stamp a transfer's derived text onto a transaction
+    // before its real payee took over. Also idempotent.
+    const pruned = ops.pruneOrphanedTransferPayees(synced.budget);
+    const loaded = pruned.budget;
+    const changed = normalized.changed + synced.added + pruned.removed;
     filePathRef.current = path;
     fileMtimeRef.current = mtimeMs;
     formatsRef.current = data.savedFormats;
@@ -433,7 +437,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       if (!isTauri()) {
-        if (!cancelled) dispatch({ type: "set", budget: ops.syncPayees(ops.normalizeTransferPayees(demoBudget()).budget).budget });
+        if (!cancelled)
+          dispatch({
+            type: "set",
+            budget: ops.pruneOrphanedTransferPayees(ops.syncPayees(ops.normalizeTransferPayees(demoBudget()).budget).budget).budget,
+          });
         return;
       }
       const repo = new BudgetRepository(new TauriFileSystem());
@@ -448,7 +456,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // First run on the single-file format: migrate legacy data if present;
         // on a truly fresh machine, ask create-or-open instead of assuming.
         if (app.activeBudgetId) {
-          const loaded = ops.syncPayees(ops.normalizeTransferPayees(await repo.loadBudget(app.activeBudgetId)).budget).budget;
+          const loaded = ops.pruneOrphanedTransferPayees(
+            ops.syncPayees(ops.normalizeTransferPayees(await repo.loadBudget(app.activeBudgetId)).budget).budget,
+          ).budget;
           formatsRef.current = await repo.loadFormats().catch(() => []);
           sourcesRef.current = await repo.loadImportSources(app.activeBudgetId).catch(() => []);
           skippedRef.current = [];
